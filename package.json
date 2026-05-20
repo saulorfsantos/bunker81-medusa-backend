@@ -1,11 +1,10 @@
 {
-  "name": "@dtc/backend",
+  "name": "bunker81-medusa-backend",
   "version": "0.0.1",
-  "description": "A starter for Medusa projects.",
-  "author": "Medusa (https://medusajs.com)",
+  "description": "Backend Medusa do projeto Bunker 81",
+  "author": "Saulo Santos",
   "license": "MIT",
   "keywords": [
-    "sqlite",
     "postgres",
     "typescript",
     "ecommerce",
@@ -16,8 +15,9 @@
     "build": "medusa build",
     "start": "medusa start",
     "dev": "medusa develop",
+    "seed": "medusa exec ./src/scripts/seed.ts",
     "test:integration:http": "TEST_TYPE=integration:http NODE_OPTIONS=--experimental-vm-modules jest --silent=false --runInBand --forceExit",
-    "test:integration:modules": "TEST_TYPE=integration:modules NODE_OPTIONS=--experimental-vm-modules jest --silent=false --runInBand --forceExit",
+    "test:integration:modules": "TEST_TYPE=integration:modules NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit",
     "test:unit": "TEST_TYPE=unit NODE_OPTIONS=--experimental-vm-modules jest --silent --runInBand --forceExit"
   },
   "dependencies": {

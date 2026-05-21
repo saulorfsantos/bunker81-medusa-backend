@@ -17,6 +17,9 @@ module.exports = defineConfig({
       cookieSecret: process.env.COOKIE_SECRET || "supersecret",
     },
   },
+  admin: {
+    backendUrl: process.env.MEDUSA_ADMIN_BACKEND_URL || process.env.MEDUSA_BACKEND_URL,
+  },
   modules: [
     {
       resolve: "@medusajs/medusa/cache-redis",

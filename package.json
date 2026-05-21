@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "build": "medusa build",
-    "start": "medusa start",
+    "start": "medusa build && cd .medusa/server && npm install --omit=dev && medusa start",
     "dev": "medusa develop",
     "seed": "medusa exec ./src/scripts/seed.ts",
     "test:integration:http": "TEST_TYPE=integration:http NODE_OPTIONS=--experimental-vm-modules jest --silent=false --runInBand --forceExit",

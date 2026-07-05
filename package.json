@@ -27,6 +27,7 @@
     "@medusajs/cli": "2.15.2",
     "@medusajs/dashboard": "2.15.2",
     "@medusajs/draft-order": "2.15.2",
+    "@medusajs/file-s3": "^2.15.2",
     "@medusajs/framework": "2.15.2",
     "@medusajs/medusa": "2.15.2",
     "@medusajs/ui": "4.1.12",

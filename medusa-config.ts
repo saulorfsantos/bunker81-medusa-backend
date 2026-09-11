@@ -2,6 +2,27 @@ import { loadEnv, defineConfig } from '@medusajs/framework/utils'
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 
+const mercadoPagoAccessToken = process.env.MERCADO_PAGO_ACCESS_TOKEN
+const mercadoPagoWebhookSecret = process.env.MERCADO_PAGO_WEBHOOK_SECRET
+const mercadoPagoWebhookBaseUrl =
+  process.env.MERCADO_PAGO_WEBHOOK_BASE_URL || process.env.MEDUSA_BACKEND_URL
+const mercadoPagoRequested = Boolean(
+  mercadoPagoAccessToken || mercadoPagoWebhookSecret
+)
+const mercadoPagoConfigured = Boolean(
+  mercadoPagoAccessToken &&
+    mercadoPagoWebhookSecret &&
+    mercadoPagoWebhookBaseUrl
+)
+
+if (mercadoPagoRequested && !mercadoPagoConfigured) {
+  throw new Error(
+    "Mercado Pago requires MERCADO_PAGO_ACCESS_TOKEN, " +
+      "MERCADO_PAGO_WEBHOOK_SECRET, and MERCADO_PAGO_WEBHOOK_BASE_URL " +
+      "(or MEDUSA_BACKEND_URL)"
+  )
+}
+
 module.exports = defineConfig({
   projectConfig: {
     databaseUrl: process.env.DATABASE_URL,
@@ -63,5 +84,26 @@ module.exports = defineConfig({
         },
       },
     },
+    ...(mercadoPagoConfigured
+      ? [
+          {
+            resolve: "@medusajs/medusa/payment",
+            options: {
+              providers: [
+                {
+                  resolve: "./src/modules/mercado-pago",
+                  id: "mercadopago",
+                  options: {
+                    accessToken: mercadoPagoAccessToken,
+                    webhookSecret: mercadoPagoWebhookSecret,
+                    webhookBaseUrl: mercadoPagoWebhookBaseUrl,
+                    liveMode: process.env.MERCADO_PAGO_LIVE_MODE === "true",
+                  },
+                },
+              ],
+            },
+          },
+        ]
+      : []),
   ],
 })

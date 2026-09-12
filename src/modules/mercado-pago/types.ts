@@ -7,7 +7,9 @@ export type MercadoPagoOptions = {
   apiUrl?: string
   requestTimeoutMs?: number
   webhookToleranceSeconds?: number
-  liveMode?: boolean
+  liveMode: boolean
+  maxRetries?: number
+  retryDelayMs?: number
 }
 
 export type MercadoPagoPayerIdentification = {
@@ -17,6 +19,7 @@ export type MercadoPagoPayerIdentification = {
 
 export type MercadoPagoSessionInput = {
   session_id?: string
+  payment_collection_id?: string
   token?: string
   payment_method_id?: string
   installments?: number
@@ -33,7 +36,7 @@ export type MercadoPagoCreatePayment = {
   token?: string
   installments?: number
   issuer_id?: number
-  capture: true
+  capture: boolean
   external_reference: string
   notification_url: string
   payer: {
@@ -42,6 +45,7 @@ export type MercadoPagoCreatePayment = {
   }
   metadata: {
     payment_session_id: string
+    payment_collection_id: string
     provider_kind: MercadoPagoProviderKind
     request_fingerprint: string
   }
@@ -57,6 +61,8 @@ export type MercadoPagoPayment = {
   payment_method_id?: string | null
   payment_type_id?: string | null
   live_mode?: boolean
+  captured?: boolean
+  transaction_amount_refunded?: number
   date_of_expiration?: string | null
   point_of_interaction?: {
     transaction_data?: {
@@ -71,6 +77,7 @@ export type MercadoPagoPayment = {
 export type MercadoPagoSessionData = {
   id: string
   session_id: string
+  payment_collection_id: string
   provider_kind: MercadoPagoProviderKind
   status: string
   status_detail?: string
@@ -81,6 +88,9 @@ export type MercadoPagoSessionData = {
   live_mode: boolean
   date_of_expiration?: string
   request_fingerprint: string
+  token?: null
+  payer_email?: null
+  payer_identification?: null
   point_of_interaction?: {
     transaction_data?: {
       qr_code?: string
@@ -90,6 +100,25 @@ export type MercadoPagoSessionData = {
   }
 }
 
+export type MercadoPagoPaymentSearchResult = {
+  results?: MercadoPagoPayment[]
+  paging?: {
+    total?: number
+  }
+}
+
+export type MercadoPagoRefund = {
+  id?: number | string
+  payment_id?: number | string
+  amount?: number
+  status?: string
+}
+
+export type MercadoPagoAccount = {
+  nickname?: string
+  tags?: string[]
+}
+
 export type MercadoPagoWebhookBody = {
   type?: string
   topic?: string
@@ -97,4 +126,5 @@ export type MercadoPagoWebhookBody = {
   data?: {
     id?: string | number
   }
+  data_id?: string | number
 }

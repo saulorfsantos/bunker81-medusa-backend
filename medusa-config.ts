@@ -6,20 +6,28 @@ const mercadoPagoAccessToken = process.env.MERCADO_PAGO_ACCESS_TOKEN
 const mercadoPagoWebhookSecret = process.env.MERCADO_PAGO_WEBHOOK_SECRET
 const mercadoPagoWebhookBaseUrl =
   process.env.MERCADO_PAGO_WEBHOOK_BASE_URL || process.env.MEDUSA_BACKEND_URL
+const mercadoPagoLiveMode =
+  process.env.MERCADO_PAGO_LIVE_MODE === "true"
+    ? true
+    : process.env.MERCADO_PAGO_LIVE_MODE === "false"
+      ? false
+      : undefined
 const mercadoPagoRequested = Boolean(
   mercadoPagoAccessToken || mercadoPagoWebhookSecret
 )
 const mercadoPagoConfigured = Boolean(
   mercadoPagoAccessToken &&
     mercadoPagoWebhookSecret &&
-    mercadoPagoWebhookBaseUrl
+    mercadoPagoWebhookBaseUrl &&
+    mercadoPagoLiveMode !== undefined
 )
 
 if (mercadoPagoRequested && !mercadoPagoConfigured) {
   throw new Error(
     "Mercado Pago requires MERCADO_PAGO_ACCESS_TOKEN, " +
       "MERCADO_PAGO_WEBHOOK_SECRET, and MERCADO_PAGO_WEBHOOK_BASE_URL " +
-      "(or MEDUSA_BACKEND_URL)"
+      "(or MEDUSA_BACKEND_URL), plus an explicit " +
+      "MERCADO_PAGO_LIVE_MODE=true|false"
   )
 }
 
@@ -97,7 +105,7 @@ module.exports = defineConfig({
                     accessToken: mercadoPagoAccessToken,
                     webhookSecret: mercadoPagoWebhookSecret,
                     webhookBaseUrl: mercadoPagoWebhookBaseUrl,
-                    liveMode: process.env.MERCADO_PAGO_LIVE_MODE === "true",
+                    liveMode: mercadoPagoLiveMode,
                   },
                 },
               ],

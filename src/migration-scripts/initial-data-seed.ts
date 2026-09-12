@@ -39,10 +39,19 @@ export default async function initial_data_seed({
     process.env.MERCADO_PAGO_ACCESS_TOKEN &&
       process.env.MERCADO_PAGO_WEBHOOK_SECRET &&
       (process.env.MERCADO_PAGO_WEBHOOK_BASE_URL ||
-        process.env.MEDUSA_BACKEND_URL)
+        process.env.MEDUSA_BACKEND_URL) &&
+      ["true", "false"].includes(process.env.MERCADO_PAGO_LIVE_MODE || "")
   );
+  const isProduction = process.env.NODE_ENV === "production";
+
+  if (isProduction && !mercadoPagoConfigured) {
+    throw new Error(
+      "Mercado Pago must be configured before seeding the Brazil region in production"
+    );
+  }
+
   const brazilPaymentProviders = [
-    "pp_system_default",
+    ...(!isProduction ? ["pp_system_default"] : []),
     ...(mercadoPagoConfigured
       ? [
           "pp_mercadopago-pix_mercadopago",

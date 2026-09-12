@@ -28,8 +28,8 @@ export const createPaymentFingerprint = (input: {
 }
 
 export const createIdempotencyKey = (input: {
-  paymentSessionId: string
-  operation: "create" | "cancel" | "refund"
+  stableReference: string
+  operation: "create" | "capture" | "cancel" | "refund" | "compensate"
   providerKind: string
   requestFingerprint?: string
   medusaOperationId?: string
@@ -39,7 +39,7 @@ export const createIdempotencyKey = (input: {
       "bunker81",
       "mercado-pago",
       input.providerKind,
-      input.paymentSessionId,
+      input.stableReference,
       input.operation,
       input.requestFingerprint || "none",
       input.medusaOperationId || "none",

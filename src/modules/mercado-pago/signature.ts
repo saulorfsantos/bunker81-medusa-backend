@@ -56,7 +56,9 @@ export const validateMercadoPagoSignature = ({
   const normalizedSignature = normalize(signature)
   const normalizedRequestId = normalize(requestId)
   const normalizedDataId =
-    dataId === undefined || dataId === null ? undefined : String(dataId).trim()
+    dataId === undefined || dataId === null
+      ? undefined
+      : String(dataId).trim().toLowerCase()
 
   if (!normalizedSignature || !normalizedRequestId || !normalizedDataId) {
     throw new Error("Invalid Mercado Pago webhook signature metadata")
@@ -68,7 +70,11 @@ export const validateMercadoPagoSignature = ({
     throw new Error("Malformed Mercado Pago webhook signature")
   }
 
-  const timestampMilliseconds = Number(timestamp) * 1000
+  const numericTimestamp = Number(timestamp)
+  const timestampMilliseconds =
+    numericTimestamp >= 1_000_000_000_000
+      ? numericTimestamp
+      : numericTimestamp * 1000
   const driftSeconds = Math.abs(now() - timestampMilliseconds) / 1000
 
   if (!Number.isFinite(driftSeconds) || driftSeconds > toleranceSeconds) {

@@ -22,7 +22,7 @@ describe("Mercado Pago payment primitives", () => {
       paymentMethodId: "pix",
     })
     const input = {
-      paymentSessionId: "payses_test",
+      stableReference: "paycol_test",
       operation: "create" as const,
       providerKind: "pix",
     }
@@ -34,13 +34,13 @@ describe("Mercado Pago payment primitives", () => {
 
   test("uses distinct idempotency keys for distinct refund amounts", () => {
     const first = createIdempotencyKey({
-      paymentSessionId: "payses_test",
+      stableReference: "paycol_test",
       operation: "refund",
       providerKind: "card",
       requestFingerprint: "first",
     })
     const second = createIdempotencyKey({
-      paymentSessionId: "payses_test",
+      stableReference: "paycol_test",
       operation: "refund",
       providerKind: "card",
       requestFingerprint: "second",
@@ -51,7 +51,7 @@ describe("Mercado Pago payment primitives", () => {
 
   test("allows separate Medusa refund records for the same amount", () => {
     const base = {
-      paymentSessionId: "payses_test",
+      stableReference: "paycol_test",
       operation: "refund" as const,
       providerKind: "card",
       requestFingerprint: "same-amount",
@@ -118,16 +118,40 @@ describe("Mercado Pago payment primitives", () => {
     ).not.toThrow()
   })
 
-  test("rejects invalid or replayed webhook signatures", () => {
+  test("rejects an invalid HMAC before any timestamp-expiry path", () => {
+    const now = 1_700_000_000_000
+    const timestamp = String(now / 1000)
+
     expect(() =>
       validateMercadoPagoSignature({
-        signature: "ts=1699999000,v1=invalid",
+        signature: `ts=${timestamp},v1=${"0".repeat(64)}`,
         requestId: "request-test",
         dataId: "12345",
         secret: "test-only-secret",
         toleranceSeconds: 300,
-        now: () => 1_700_000_000_000,
+        now: () => now,
       })
-    ).toThrow()
+    ).toThrow("Invalid Mercado Pago webhook signature")
+  })
+
+  test("accepts Mercado Pago millisecond timestamps and normalizes data IDs", () => {
+    const now = 1_700_000_000_000
+    const timestamp = String(now)
+    const secret = "test-only-secret"
+    const manifest = `id:abc123;request-id:request-test;ts:${timestamp};`
+    const signature = createHmac("sha256", secret)
+      .update(manifest)
+      .digest("hex")
+
+    expect(() =>
+      validateMercadoPagoSignature({
+        signature: `ts=${timestamp},v1=${signature}`,
+        requestId: "request-test",
+        dataId: "ABC123",
+        secret,
+        toleranceSeconds: 300,
+        now: () => now,
+      })
+    ).not.toThrow()
   })
 })

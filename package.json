@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "build": "medusa build",
+    "typecheck": "tsc --noEmit",
     "start": "medusa build && cd .medusa/server && npm install --omit=dev && medusa start",
     "dev": "medusa develop",
     "seed": "medusa exec ./src/migration-scripts/initial-data-seed.ts",

@@ -44,7 +44,12 @@ export class MercadoPagoClient {
   }
 
   async validateEnvironment(expectedLiveMode: boolean): Promise<void> {
-    this.environmentValidation ??= this.validateEnvironment_(expectedLiveMode)
+    this.environmentValidation ??= this.validateEnvironment_(
+      expectedLiveMode
+    ).catch((error) => {
+      this.environmentValidation = undefined
+      throw error
+    })
     return this.environmentValidation
   }
 

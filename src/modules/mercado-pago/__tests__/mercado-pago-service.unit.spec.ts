@@ -178,6 +178,24 @@ describe("Mercado Pago provider service", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.example.test/users/me")
   })
 
+  test("retries credential validation after a transient failure", async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error("temporary validation outage"))
+      .mockResolvedValueOnce(
+        jsonResponse({ nickname: "TESTSELLER", tags: ["test_user"] })
+      )
+    const client = new MercadoPagoClient({
+      ...options,
+      accessToken: "APP_USR-unit-only",
+    })
+
+    await expect(client.validateEnvironment(false)).rejects.toThrow(
+      "temporary validation outage"
+    )
+    await expect(client.validateEnvironment(false)).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   test("cancels an authorization when post-create identity validation fails", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ results: [] }))

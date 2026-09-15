@@ -30,6 +30,10 @@ Medusa payment state. A `TEST-` credential is rejected in live mode. For
 
 Medusa injects `session_id`. API middleware injects the route's authoritative
 `payment_collection_id`; the storefront cannot select this stable reference.
+The provider still retrieves the payment session from the Payment Module before
+any Mercado Pago request and derives the collection from that stored session.
+Missing sessions and a body/route collection mismatch fail closed before the
+provider validates credentials, searches, or creates a remote payment.
 The storefront supplies the remaining data when it creates the payment session.
 
 Pix requires:
@@ -115,6 +119,46 @@ well as compensating the remote charge.
   of the same value therefore remain distinct.
 - Transient HTTP/network failures use bounded exponential backoff. Mutating
   retries carry deterministic Mercado Pago idempotency keys.
+
+## Lost create responses and orphan attempts
+
+Before the remote create call, the provider writes a deterministic
+`mercado_pago_attempt` record. Its ownership tuple is the Medusa payment-session
+ID, authoritative payment-collection ID, provider kind, and request fingerprint.
+The fingerprint is only an integrity attribute and is never sufficient to adopt
+a payment. A retry uses the same attempt ID and Mercado Pago idempotency key.
+
+If create may have succeeded but both its response and the immediate search are
+empty, the provider leaves the durable attempt in `creating` and fails the
+request. A five-minute Medusa job searches due attempts after a **10-minute
+grace period**, long enough for delayed Mercado Pago search indexing without
+blocking the request or polling indefinitely. Search stops after 24 hours and
+raises structured manual-review observability.
+
+When the original session is still live, the job drives the normal Payment
+Module update so the strictly matching remote payment is bound to that session.
+When the session is gone, only `pending`, `in_process`, and `in_mediation` are
+auto-canceled. Cancellation uses a deterministic idempotency key and is recorded
+once. `authorized`, `approved` (paid), ambiguous/multiple matches, and unknown
+states are never canceled or refunded automatically; they produce a sanitized
+`mercado_pago_orphan_manual_review` JSON log containing only local/remote IDs,
+provider, collection, status, and reason. Operations must reconcile those cases
+against the Medusa order/payment state before acting.
+
+A late orphan webhook is matched to the durable attempt using the complete
+ownership tuple and recorded for the job, but returns `NOT_SUPPORTED` to the
+Payment Module when no live owning session exists. It is never adopted by a
+different session.
+
+## 3DS trust boundary
+
+Client-supplied `three_ds_info`, including `external_resource_url` and `creq`,
+is never a continuation source. A challenge is returned only when it is present
+in a validated Mercado Pago payment response or in the durable attempt record
+for the same session, provider, fingerprint, and remote payment. The latter
+supports later GET/search responses that omit or return null challenge fields.
+Missing continuation for `pending_challenge` is a controlled contract error,
+and challenge URLs must remain credential-free HTTPS URLs.
 
 ## Deferred after-sale scope (M6/M7)
 

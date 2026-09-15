@@ -26,6 +26,13 @@ import {
 } from "@medusajs/framework/utils"
 import { MercadoPagoClient } from "./client"
 import {
+  createAttemptId,
+  MERCADO_PAGO_ORPHAN_GRACE_PERIOD_MS,
+  structuredOrphanEvent,
+  type MercadoPagoAttemptStore,
+  type StoredMercadoPagoAttempt,
+} from "./attempts"
+import {
   createIdempotencyKey,
   createPaymentFingerprint,
 } from "./idempotency"
@@ -46,6 +53,7 @@ import type {
 
 type StoredPaymentSession = {
   id: string
+  payment_collection_id?: string | null
   data?: Record<string, unknown> | null
   created_at?: Date | string
   updated_at?: Date | string
@@ -56,6 +64,10 @@ type PaymentSessionStore = {
     filters: { payment_collection_id: string },
     config?: { order?: { updated_at: "DESC" } }
   ) => Promise<StoredPaymentSession[]>
+  retrieve: (
+    id: string,
+    config?: { select?: string[] }
+  ) => Promise<StoredPaymentSession>
   update: (data: {
     id: string
     data: MercadoPagoSessionData
@@ -64,6 +76,12 @@ type PaymentSessionStore = {
 
 type InjectedDependencies = Record<string, unknown> & {
   paymentSessionService: PaymentSessionStore
+  mercadoPagoAttempt: MercadoPagoAttemptStore
+  logger?: {
+    info: (message: string) => void
+    warn: (message: string) => void
+    error: (message: string) => void
+  }
 }
 
 const CANCELLABLE_STATUSES = new Set([
@@ -191,6 +209,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
   protected readonly options_: MercadoPagoOptions
   protected readonly client_: MercadoPagoClient
   private readonly paymentSessionStore_: PaymentSessionStore
+  private readonly attemptStore_: MercadoPagoAttemptStore
+  private readonly logger_: NonNullable<InjectedDependencies["logger"]>
 
   static validateOptions(options: MercadoPagoOptions): void {
     const accessToken = requireString(
@@ -225,14 +245,33 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     super(container, options)
     if (
       typeof container.paymentSessionService?.list !== "function" ||
+      typeof container.paymentSessionService?.retrieve !== "function" ||
       typeof container.paymentSessionService?.update !== "function"
     ) {
       throw new Error("Medusa payment session service is required")
+    }
+    if (
+      typeof container.mercadoPagoAttempt?.listMercadoPagoAttempts !==
+        "function" ||
+      typeof container.mercadoPagoAttempt?.createMercadoPagoAttempts !==
+        "function" ||
+      typeof container.mercadoPagoAttempt?.updateMercadoPagoAttempts !==
+        "function" ||
+      typeof container.mercadoPagoAttempt?.retrieveMercadoPagoAttempt !==
+        "function"
+    ) {
+      throw new Error("Mercado Pago attempt module is required")
     }
 
     this.options_ = options
     this.client_ = new MercadoPagoClient(options)
     this.paymentSessionStore_ = container.paymentSessionService
+    this.attemptStore_ = container.mercadoPagoAttempt
+    this.logger_ = container.logger || {
+      info: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    }
   }
 
   protected abstract getPaymentMethod(
@@ -250,10 +289,10 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     data,
     context,
   }: InitiatePaymentInput): Promise<InitiatePaymentOutput> {
-    const previousSessionData = toRecord(data)
     const sessionInput = toSessionInput(data)
     const sessionId = requireString(sessionInput.session_id, "Payment session ID")
-    const stableReference = requireStableReference(
+    const stableReference = await this.resolveAuthoritativeCollection(
+      sessionId,
       sessionInput.payment_collection_id
     )
     const currencyCode = requireString(currency_code, "Currency code")
@@ -289,6 +328,20 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     )
 
     if (existingPayment) {
+      const attempt = await this.ensureAttempt({
+        sessionId,
+        stableReference,
+        requestFingerprint,
+        idempotencyKey: createIdempotencyKey({
+          stableReference,
+          operation: "create",
+          providerKind: this.providerKind,
+          requestFingerprint,
+          medusaOperationId: sessionId,
+        }),
+        amount: normalizedAmount,
+        currencyCode,
+      })
       if (
         this.providerKind === "card" &&
         (existingPayment.status === "approved" || existingPayment.captured)
@@ -299,13 +352,13 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         )
       }
 
-      const sessionData = this.toSessionData(
+      const sessionData = await this.toSessionData(
         existingPayment,
         sessionId,
         stableReference,
-        requestFingerprint,
-        previousSessionData
+        requestFingerprint
       )
+      await this.recordBoundAttempt(attempt, existingPayment, sessionData)
       await this.bindRecoveredPaymentSession(sessionId, sessionData)
 
       return {
@@ -322,6 +375,20 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       requestFingerprint,
       medusaOperationId: sessionId,
     })
+    const attemptId = createAttemptId({
+      sessionId,
+      providerKind: this.providerKind,
+      requestFingerprint,
+    })
+    const attempt = await this.ensureAttempt({
+      sessionId,
+      stableReference,
+      requestFingerprint,
+      idempotencyKey,
+      amount: normalizedAmount,
+      currencyCode,
+    })
+    await this.assertNoUnresolvedOrphanAttempts(stableReference, attemptId)
 
     const body: MercadoPagoCreatePayment = {
       transaction_amount: normalizedAmount,
@@ -363,6 +430,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       )
 
       if (!recovered) {
+        await this.attemptStore_.updateMercadoPagoAttempts({
+          id: attempt.id,
+          state: "creating",
+          last_error_code: "create_response_unconfirmed",
+        })
         throw createError
       }
 
@@ -386,12 +458,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
           "Mercado Pago unexpectedly captured the card before the capture lifecycle"
         )
       }
-      sessionData = this.toSessionData(
+      sessionData = await this.toSessionData(
         payment,
         sessionId,
         stableReference,
-        requestFingerprint,
-        previousSessionData
+        requestFingerprint
       )
     } catch (error) {
       if (
@@ -402,10 +473,29 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
           sessionId
         )
       ) {
-        await this.compensateCreatedPayment(payment, stableReference)
+        try {
+          await this.compensateCreatedPayment(payment, stableReference)
+          await this.attemptStore_.updateMercadoPagoAttempts({
+            id: attempt.id,
+            state: "compensated",
+            remote_payment_id: String(payment.id),
+            remote_status: payment.status,
+            compensated_at: new Date(),
+            last_error_code: "post_create_validation_failed",
+          })
+        } catch (compensationError) {
+          await this.markAttemptForManualReview(
+            attempt,
+            payment,
+            "post_create_compensation_failed"
+          )
+          throw compensationError
+        }
       }
       throw error
     }
+
+    await this.recordBoundAttempt(attempt, payment, sessionData)
 
     if (recoveredPayment) {
       await this.bindRecoveredPaymentSession(sessionId, sessionData)
@@ -450,12 +540,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
 
     return {
       status: mapMercadoPagoStatus(payment.status),
-      data: this.toSessionData(
+      data: await this.toSessionData(
         payment,
         sessionId,
         stableReference,
-        requestFingerprint,
-        data
+        requestFingerprint
       ),
     }
   }
@@ -500,12 +589,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
 
     return {
       status: mapMercadoPagoStatus(payment.status),
-      data: this.toSessionData(
+      data: await this.toSessionData(
         payment,
         sessionId,
         stableReference,
-        requestFingerprint,
-        storedData
+        requestFingerprint
       ),
     }
   }
@@ -534,12 +622,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     )
 
     return {
-      data: this.toSessionData(
+      data: await this.toSessionData(
         payment,
         sessionId,
         stableReference,
-        requestFingerprint,
-        storedData
+        requestFingerprint
       ),
     }
   }
@@ -597,12 +684,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     }
 
     return {
-      data: this.toSessionData(
+      data: await this.toSessionData(
         payment,
         sessionId,
         stableReference,
-        requestFingerprint,
-        storedData
+        requestFingerprint
       ),
     }
   }
@@ -637,12 +723,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
 
     if (CANCELED_STATUSES.has(current.status) || current.status === "rejected") {
       return {
-        data: this.toSessionData(
+        data: await this.toSessionData(
           current,
           sessionId,
           stableReference,
-          requestFingerprint,
-          storedData
+          requestFingerprint
         ),
       }
     }
@@ -684,12 +769,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       }
 
       return {
-        data: this.toSessionData(
+        data: await this.toSessionData(
           refunded,
           sessionId,
           stableReference,
-          requestFingerprint,
-          storedData
+          requestFingerprint
         ),
       }
     }
@@ -722,12 +806,11 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     }
 
     return {
-      data: this.toSessionData(
+      data: await this.toSessionData(
         canceled,
         sessionId,
         stableReference,
-        requestFingerprint,
-        storedData
+        requestFingerprint
       ),
     }
   }
@@ -833,6 +916,7 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       stableReference
     )
     if (!sessionId) {
+      await this.recordOrphanWebhook(payment, stableReference)
       return { action: PaymentActions.NOT_SUPPORTED }
     }
 
@@ -851,6 +935,252 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         amount: payment.transaction_amount,
       },
     }
+  }
+
+  private async resolveAuthoritativeCollection(
+    sessionId: string,
+    clientReference: unknown
+  ): Promise<string> {
+    let session: StoredPaymentSession
+
+    try {
+      session = await this.paymentSessionStore_.retrieve(sessionId, {
+        select: ["id", "payment_collection_id", "data"],
+      })
+    } catch {
+      throw new Error("Authoritative Medusa payment session was not found")
+    }
+
+    if (session.id !== sessionId) {
+      throw new Error("Authoritative Medusa payment session ID mismatch")
+    }
+
+    const stableReference = requireStableReference(
+      session.payment_collection_id
+    )
+    if (
+      clientReference !== undefined &&
+      clientReference !== null &&
+      requireStableReference(clientReference) !== stableReference
+    ) {
+      throw new Error("Payment collection does not own this payment session")
+    }
+
+    return stableReference
+  }
+
+  private async ensureAttempt(input: {
+    sessionId: string
+    stableReference: string
+    requestFingerprint: string
+    idempotencyKey: string
+    amount: number
+    currencyCode: string
+  }): Promise<StoredMercadoPagoAttempt> {
+    const id = createAttemptId({
+      sessionId: input.sessionId,
+      providerKind: this.providerKind,
+      requestFingerprint: input.requestFingerprint,
+    })
+
+    try {
+      const existing = await this.attemptStore_.retrieveMercadoPagoAttempt(id)
+      if (
+        existing.payment_session_id !== input.sessionId ||
+        existing.payment_collection_id !== input.stableReference ||
+        existing.provider_kind !== this.providerKind ||
+        existing.request_fingerprint !== input.requestFingerprint ||
+        existing.idempotency_key !== input.idempotencyKey
+      ) {
+        throw new Error("Mercado Pago attempt ownership mismatch")
+      }
+      return existing
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "Mercado Pago attempt ownership mismatch"
+      ) {
+        throw error
+      }
+    }
+
+    try {
+      return await this.attemptStore_.createMercadoPagoAttempts({
+        id,
+        payment_session_id: input.sessionId,
+        payment_collection_id: input.stableReference,
+        provider_kind: this.providerKind,
+        request_fingerprint: input.requestFingerprint,
+        idempotency_key: input.idempotencyKey,
+        amount: input.amount,
+        currency_code: input.currencyCode.toLowerCase(),
+        state: "creating",
+        reconcile_after: new Date(
+          Date.now() + MERCADO_PAGO_ORPHAN_GRACE_PERIOD_MS
+        ),
+      })
+    } catch {
+      const concurrent = await this.attemptStore_.retrieveMercadoPagoAttempt(id)
+      if (
+        concurrent.payment_session_id !== input.sessionId ||
+        concurrent.payment_collection_id !== input.stableReference ||
+        concurrent.provider_kind !== this.providerKind ||
+        concurrent.request_fingerprint !== input.requestFingerprint
+      ) {
+        throw new Error("Mercado Pago attempt ownership mismatch")
+      }
+      return concurrent
+    }
+  }
+
+  private async assertNoUnresolvedOrphanAttempts(
+    stableReference: string,
+    currentAttemptId: string
+  ): Promise<void> {
+    const attempts = await this.attemptStore_.listMercadoPagoAttempts({
+      payment_collection_id: stableReference,
+    })
+    const unresolved = attempts
+      .filter((attempt) =>
+        ["creating", "remote_found", "manual_review"].includes(attempt.state)
+      )
+      .sort((left, right) => {
+        const leftCreated = Date.parse(String(left.created_at || ""))
+        const rightCreated = Date.parse(String(right.created_at || ""))
+        const timeDifference =
+          (Number.isFinite(leftCreated) ? leftCreated : 0) -
+          (Number.isFinite(rightCreated) ? rightCreated : 0)
+        return timeDifference || left.id.localeCompare(right.id)
+      })[0]
+
+    if (
+      unresolved &&
+      (unresolved.id !== currentAttemptId || unresolved.state === "manual_review")
+    ) {
+      throw new Error(
+        "Mercado Pago payment creation is blocked while an earlier attempt is being reconciled"
+      )
+    }
+  }
+
+  private async recordBoundAttempt(
+    attempt: StoredMercadoPagoAttempt,
+    payment: MercadoPagoPayment,
+    sessionData: MercadoPagoSessionData
+  ): Promise<void> {
+    await this.attemptStore_.updateMercadoPagoAttempts({
+      id: attempt.id,
+      state: "bound",
+      remote_payment_id: String(payment.id),
+      remote_status: payment.status,
+      bound_at: new Date(),
+      last_error_code: null,
+      ...(sessionData.three_ds_info
+        ? { three_ds_info: sessionData.three_ds_info }
+        : {}),
+    })
+  }
+
+  private async markAttemptForManualReview(
+    attempt: StoredMercadoPagoAttempt,
+    payment: MercadoPagoPayment,
+    reason: string
+  ): Promise<void> {
+    await this.attemptStore_.updateMercadoPagoAttempts({
+      id: attempt.id,
+      state: "manual_review",
+      remote_payment_id: String(payment.id),
+      remote_status: payment.status,
+      manual_review_at: new Date(),
+      last_error_code: reason,
+    })
+    this.logger_.error(
+      structuredOrphanEvent("mercado_pago_orphan_manual_review", {
+        reason,
+        attempt_id: attempt.id,
+        payment_session_id: attempt.payment_session_id,
+        payment_collection_id: attempt.payment_collection_id,
+        provider_kind: attempt.provider_kind,
+        remote_payment_id: String(payment.id),
+        remote_status: payment.status,
+      })
+    )
+  }
+
+  private async recordOrphanWebhook(
+    payment: MercadoPagoPayment,
+    stableReference: string
+  ): Promise<void> {
+    const metadata = toRecord(payment.metadata)
+    const sessionId =
+      typeof metadata.payment_session_id === "string"
+        ? metadata.payment_session_id
+        : undefined
+    const requestFingerprint =
+      typeof metadata.request_fingerprint === "string"
+        ? metadata.request_fingerprint
+        : undefined
+
+    if (!sessionId || !requestFingerprint) {
+      return
+    }
+
+    const attemptId = createAttemptId({
+      sessionId,
+      providerKind: this.providerKind,
+      requestFingerprint,
+    })
+    let attempt: StoredMercadoPagoAttempt | undefined
+    try {
+      attempt = await this.attemptStore_.retrieveMercadoPagoAttempt(attemptId)
+    } catch {
+      attempt = undefined
+    }
+
+    if (
+      !attempt ||
+      attempt.payment_collection_id !== stableReference ||
+      !this.ownsPaymentAttempt(
+        payment,
+        stableReference,
+        requestFingerprint,
+        sessionId
+      )
+    ) {
+      this.logger_.warn(
+        structuredOrphanEvent("mercado_pago_untracked_orphan_webhook", {
+          payment_session_id: sessionId,
+          payment_collection_id: stableReference,
+          provider_kind: this.providerKind,
+          remote_payment_id: String(payment.id),
+          remote_status: payment.status,
+        })
+      )
+      return
+    }
+
+    if (
+      !["compensated", "resolved_terminal", "manual_review"].includes(
+        attempt.state
+      )
+    ) {
+      await this.attemptStore_.updateMercadoPagoAttempts({
+        id: attempt.id,
+        state: "remote_found",
+        remote_payment_id: String(payment.id),
+        remote_status: payment.status,
+      })
+    }
+    this.logger_.warn(
+      structuredOrphanEvent("mercado_pago_orphan_webhook_recognized", {
+        attempt_id: attempt.id,
+        payment_session_id: sessionId,
+        payment_collection_id: stableReference,
+        provider_kind: this.providerKind,
+        remote_payment_id: String(payment.id),
+        remote_status: payment.status,
+      })
+    )
   }
 
   private getWebhookUrl(): string {
@@ -1201,13 +1531,12 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     }
   }
 
-  private toSessionData(
+  private async toSessionData(
     payment: MercadoPagoPayment,
     sessionId: string,
     stableReference: string,
-    requestFingerprint: string,
-    previousSessionData: Record<string, unknown> = {}
-  ): MercadoPagoSessionData {
+    requestFingerprint: string
+  ): Promise<MercadoPagoSessionData> {
     const transactionData = payment.point_of_interaction?.transaction_data
     const publicTransactionData = transactionData
       ? {
@@ -1216,7 +1545,12 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
           ticket_url: transactionData.ticket_url || undefined,
         }
       : undefined
-    const threeDsInfo = this.toThreeDsInfo(payment, previousSessionData)
+    const threeDsInfo = await this.toThreeDsInfo(
+      payment,
+      sessionId,
+      stableReference,
+      requestFingerprint
+    )
 
     return {
       id: String(payment.id),
@@ -1242,10 +1576,12 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     }
   }
 
-  private toThreeDsInfo(
+  private async toThreeDsInfo(
     payment: MercadoPagoPayment,
-    previousSessionData: Record<string, unknown>
-  ): MercadoPagoSessionData["three_ds_info"] {
+    sessionId: string,
+    stableReference: string,
+    requestFingerprint: string
+  ): Promise<MercadoPagoSessionData["three_ds_info"]> {
     if (
       this.providerKind !== "card" ||
       payment.status !== "pending" ||
@@ -1255,13 +1591,45 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     }
 
     const remoteThreeDsInfo = toRecord(payment.three_ds_info)
-    const storedThreeDsInfo = toRecord(previousSessionData.three_ds_info)
-    const threeDsInfo = Object.keys(remoteThreeDsInfo).length
-      ? remoteThreeDsInfo
-      : storedThreeDsInfo
+    const remoteHasAnyValue = Object.values(remoteThreeDsInfo).some(
+      (value) => value !== null && value !== undefined && value !== ""
+    )
+    let threeDsInfo = remoteThreeDsInfo
+
+    if (!remoteHasAnyValue) {
+      const attemptId = createAttemptId({
+        sessionId,
+        providerKind: this.providerKind,
+        requestFingerprint,
+      })
+      let attempt: StoredMercadoPagoAttempt | undefined
+
+      try {
+        attempt = await this.attemptStore_.retrieveMercadoPagoAttempt(attemptId)
+      } catch {
+        attempt = undefined
+      }
+
+      if (
+        attempt?.payment_session_id !== sessionId ||
+        attempt.payment_collection_id !== stableReference ||
+        attempt.provider_kind !== this.providerKind ||
+        attempt.request_fingerprint !== requestFingerprint ||
+        (attempt.remote_payment_id &&
+          attempt.remote_payment_id !== String(payment.id))
+      ) {
+        throw new Error(
+          "Mercado Pago 3DS challenge continuation is unavailable for this payment attempt"
+        )
+      }
+
+      threeDsInfo = toRecord(attempt.three_ds_info)
+    }
 
     if (!Object.keys(threeDsInfo).length) {
-      return undefined
+      throw new Error(
+        "Mercado Pago 3DS challenge continuation is unavailable for this payment attempt"
+      )
     }
 
     const challengeUrl = requireString(

@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto"
 import { PaymentActions, PaymentSessionStatus } from "@medusajs/framework/utils"
 import { MercadoPagoClient } from "../client"
+import { createAttemptId } from "../attempts"
 import { createPaymentFingerprint } from "../idempotency"
 import {
   MercadoPagoCardProviderService,
@@ -95,12 +96,60 @@ const serviceContainer = (
     },
   ]
 ) => {
+  const normalizedSessions = sessions.map((session) => ({
+    payment_collection_id: "paycol_cart_1",
+    ...session,
+  }))
   const paymentSessionService = {
-    list: jest.fn().mockResolvedValue(sessions),
+    list: jest.fn().mockResolvedValue(normalizedSessions),
+    retrieve: jest.fn().mockImplementation(async (id: string) => {
+      return (
+        normalizedSessions.find((session) => session.id === id) || {
+          id,
+          payment_collection_id: "paycol_cart_1",
+          data: { session_id: id },
+        }
+      )
+    }),
     update: jest.fn().mockResolvedValue(undefined),
   }
+  const attempts = new Map<string, Record<string, unknown>>()
+  const mercadoPagoAttempt = {
+    listMercadoPagoAttempts: jest.fn().mockImplementation(async () =>
+      Array.from(attempts.values())
+    ),
+    retrieveMercadoPagoAttempt: jest.fn().mockImplementation(async (id: string) => {
+      const attempt = attempts.get(id)
+      if (!attempt) {
+        throw new Error("attempt not found")
+      }
+      return attempt
+    }),
+    createMercadoPagoAttempts: jest.fn().mockImplementation(async (data) => {
+      if (attempts.has(data.id)) {
+        throw new Error("duplicate attempt")
+      }
+      const attempt = {
+        ...data,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }
+      attempts.set(data.id, attempt)
+      return attempt
+    }),
+    updateMercadoPagoAttempts: jest.fn().mockImplementation(async (data) => {
+      const attempt = { ...attempts.get(data.id), ...data, updated_at: new Date() }
+      attempts.set(data.id, attempt)
+      return attempt
+    }),
+  }
+  const logger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  }
 
-  return { paymentSessionService }
+  return { paymentSessionService, mercadoPagoAttempt, logger, attempts }
 }
 
 const initiateInput = (overrides: Record<string, unknown> = {}) => ({
@@ -121,6 +170,44 @@ const initiateInput = (overrides: Record<string, unknown> = {}) => ({
     },
   },
 })
+
+const seedStoredContinuation = (
+  container: ReturnType<typeof serviceContainer>,
+  overrides: {
+    sessionId?: string
+    requestFingerprint?: string
+    remotePaymentId?: string
+    challengeUrl?: string
+    creq?: string
+  } = {}
+) => {
+  const sessionId = overrides.sessionId || "payses_1"
+  const requestFingerprint = overrides.requestFingerprint || "fingerprint-1"
+  const id = createAttemptId({
+    sessionId,
+    providerKind: "card",
+    requestFingerprint,
+  })
+  container.attempts.set(id, {
+    id,
+    payment_session_id: sessionId,
+    payment_collection_id: "paycol_cart_1",
+    provider_kind: "card",
+    request_fingerprint: requestFingerprint,
+    idempotency_key: "unit-idempotency-key",
+    amount: 100,
+    currency_code: "brl",
+    state: "bound",
+    reconcile_after: new Date(0),
+    remote_payment_id: overrides.remotePaymentId || "12345",
+    three_ds_info: {
+      external_resource_url:
+        overrides.challengeUrl || "https://issuer.example.test/challenge",
+      creq: overrides.creq || "stored-challenge-request",
+    },
+    created_at: new Date(),
+  })
+}
 
 describe("Mercado Pago provider service", () => {
   const fetchMock = jest.fn()
@@ -188,6 +275,31 @@ describe("Mercado Pago provider service", () => {
 
     await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
       "credential environment mismatch"
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("fails closed before Mercado Pago when collection input is manipulated", async () => {
+    const container = serviceContainer()
+    const service = new MercadoPagoCardProviderService(container, options)
+
+    await expect(
+      service.initiatePayment(
+        initiateInput({ payment_collection_id: "paycol_VICTIM" })
+      )
+    ).rejects.toThrow("does not own this payment session")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("fails closed before Mercado Pago when the payment session does not exist", async () => {
+    const container = serviceContainer()
+    container.paymentSessionService.retrieve.mockRejectedValueOnce(
+      new Error("not found")
+    )
+    const service = new MercadoPagoCardProviderService(container, options)
+
+    await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
+      "payment session was not found"
     )
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -352,6 +464,28 @@ describe("Mercado Pago provider service", () => {
     expect(result.id).toBe("12345")
     expect(result.status).toBe(PaymentSessionStatus.AUTHORIZED)
     expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  test("persists an orphan candidate when create is accepted but search is initially empty", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockRejectedValueOnce(new TypeError("simulated lost response"))
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+
+    const container = serviceContainer()
+    const service = new MercadoPagoCardProviderService(container, options)
+
+    await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
+      "simulated lost response"
+    )
+    expect(container.attempts.size).toBe(1)
+    expect(Array.from(container.attempts.values())[0]).toMatchObject({
+      payment_session_id: "payses_1",
+      payment_collection_id: "paycol_cart_1",
+      provider_kind: "card",
+      state: "creating",
+      last_error_code: "create_response_unconfirmed",
+    })
   })
 
   test("does not recover a canceled payment with the same fingerprint from another session", async () => {
@@ -649,14 +783,9 @@ describe("Mercado Pago provider service", () => {
 
   test("does not compensate the winner when concurrent attempts race", async () => {
     let searchCount = 0
-    let createCount = 0
     let releaseSearches!: () => void
-    let releaseCreates!: () => void
     const searchesStarted = new Promise<void>((resolve) => {
       releaseSearches = resolve
-    })
-    const createsStarted = new Promise<void>((resolve) => {
-      releaseCreates = resolve
     })
     const creationKeys: string[] = []
     let winningPayment: MercadoPagoPayment | undefined
@@ -677,11 +806,6 @@ describe("Mercado Pago provider service", () => {
           String((init.headers as Record<string, string>)["X-Idempotency-Key"])
         )
         winningPayment ??= paymentFromCreate(body)
-        createCount += 1
-        if (createCount === 2) {
-          releaseCreates()
-        }
-        await createsStarted
         return jsonResponse(winningPayment)
       }
 
@@ -712,10 +836,9 @@ describe("Mercado Pago provider service", () => {
           ) as PromiseRejectedResult
         ).reason
       )
-    ).toContain("session ownership mismatch")
-    expect(creationKeys).toHaveLength(2)
-    expect(creationKeys[0]).not.toBe(creationKeys[1])
-    expect(fetchMock).toHaveBeenCalledTimes(4)
+    ).toContain("earlier attempt is being reconciled")
+    expect(creationKeys).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(
       fetchMock.mock.calls.some(
         ([url, init]) =>
@@ -765,6 +888,30 @@ describe("Mercado Pago provider service", () => {
     })
   })
 
+  test("never promotes client-supplied 3DS data to a trusted challenge", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+        return jsonResponse(paymentFromCreate(body))
+      })
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+    const result = await service.initiatePayment(
+      initiateInput({
+        three_ds_info: {
+          external_resource_url: "https://attacker.fake.invalid/phish",
+          creq: "untrusted-client-creq",
+        },
+      })
+    )
+
+    expect(result.data?.three_ds_info).toBeUndefined()
+    expect(JSON.stringify(result.data)).not.toContain("attacker.fake.invalid")
+  })
+
   test("preserves stored 3DS continuation when pending GET responses omit it", async () => {
     const pendingChallenge = storedPayment({
       status: "pending",
@@ -782,10 +929,9 @@ describe("Mercado Pago provider service", () => {
     }
     fetchMock.mockImplementation(async () => jsonResponse(pendingChallenge))
 
-    const service = new MercadoPagoCardProviderService(
-      serviceContainer(),
-      options
-    )
+    const container = serviceContainer()
+    seedStoredContinuation(container)
+    const service = new MercadoPagoCardProviderService(container, options)
     const status = await service.getPaymentStatus({ data: challengeData })
     const authorized = await service.authorizePayment({ data: challengeData })
     const retrieved = await service.retrievePayment({ data: challengeData })
@@ -801,6 +947,73 @@ describe("Mercado Pago provider service", () => {
       })
     }
     expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  test.each([
+    ["null fields", { external_resource_url: null, creq: null }],
+    ["empty object", {}],
+    ["omitted", undefined],
+  ])(
+    "uses same-attempt server continuation when remote 3DS is %s",
+    async (_label, remoteThreeDsInfo) => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          storedPayment({
+            status: "pending",
+            status_detail: "pending_challenge",
+            three_ds_info: remoteThreeDsInfo,
+          })
+        )
+      )
+      const container = serviceContainer()
+      seedStoredContinuation(container)
+      const service = new MercadoPagoCardProviderService(container, options)
+
+      const result = await service.getPaymentStatus({ data: storedData })
+      expect(result.data?.three_ds_info).toEqual({
+        external_resource_url: "https://issuer.example.test/challenge",
+        creq: "stored-challenge-request",
+      })
+    }
+  )
+
+  test("fails closed when a null remote 3DS continuation has no trusted stored value", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        storedPayment({
+          status: "pending",
+          status_detail: "pending_challenge",
+          three_ds_info: { external_resource_url: null, creq: null },
+        })
+      )
+    )
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+
+    await expect(
+      service.getPaymentStatus({ data: storedData })
+    ).rejects.toThrow("continuation is unavailable for this payment attempt")
+  })
+
+  test("never reuses a trusted challenge from another session", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        storedPayment({
+          status: "pending",
+          status_detail: "pending_challenge",
+          three_ds_info: undefined,
+        })
+      )
+    )
+    const container = serviceContainer()
+    seedStoredContinuation(container, { sessionId: "payses_other" })
+    const service = new MercadoPagoCardProviderService(container, options)
+
+    await expect(
+      service.getPaymentStatus({ data: storedData })
+    ).rejects.toThrow("continuation is unavailable for this payment attempt")
   })
 
   test("continues to reject non-HTTPS 3DS challenge URLs", async () => {
@@ -1015,6 +1228,44 @@ describe("Mercado Pago provider service", () => {
       })
     ).resolves.toEqual({ action: PaymentActions.NOT_SUPPORTED })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("recognizes a late orphan webhook without adopting another session", async () => {
+    const timestamp = String(Date.now())
+    const dataId = "orphan-tracked-123"
+    const requestId = "request-orphan-tracked"
+    const manifest = `id:${dataId};request-id:${requestId};ts:${timestamp};`
+    const signature = createHmac("sha256", options.webhookSecret)
+      .update(manifest)
+      .digest("hex")
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        storedPayment({ id: dataId, status: "approved", captured: true })
+      )
+    )
+    const container = serviceContainer([])
+    seedStoredContinuation(container, { remotePaymentId: dataId })
+    const service = new MercadoPagoCardProviderService(container, options)
+
+    await expect(
+      service.getWebhookActionAndData({
+        data: { type: "payment", data_id: dataId },
+        rawData: "{}",
+        headers: {
+          "x-request-id": requestId,
+          "x-signature": `ts=${timestamp},v1=${signature}`,
+        },
+      })
+    ).resolves.toEqual({ action: PaymentActions.NOT_SUPPORTED })
+    expect(container.paymentSessionService.update).not.toHaveBeenCalled()
+    expect(Array.from(container.attempts.values())[0]).toMatchObject({
+      state: "remote_found",
+      remote_payment_id: dataId,
+      remote_status: "approved",
+    })
+    expect(container.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("mercado_pago_orphan_webhook_recognized")
+    )
   })
 
   test("does not mask an ownership error for a webhook with an active session", async () => {

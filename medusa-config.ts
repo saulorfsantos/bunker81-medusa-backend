@@ -48,8 +48,12 @@ module.exports = defineConfig({
   },
   admin: {
     backendUrl: process.env.MEDUSA_ADMIN_BACKEND_URL || process.env.MEDUSA_BACKEND_URL,
+    disable: process.env.MEDUSA_DISABLE_ADMIN === "true",
   },
   modules: [
+    {
+      resolve: "./src/modules/mercado-pago-attempt",
+    },
     {
       resolve: "@medusajs/medusa/file",
       options: {

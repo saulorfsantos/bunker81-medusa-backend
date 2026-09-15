@@ -81,6 +81,28 @@ const storedData = {
   request_fingerprint: "fingerprint-1",
 }
 
+const serviceContainer = (
+  sessions: Array<{
+    id: string
+    data: Record<string, unknown>
+    created_at?: Date | string
+    updated_at?: Date | string
+  }> = [
+    {
+      id: "payses_1",
+      data: storedData,
+      updated_at: "2026-01-01T00:00:00.000Z",
+    },
+  ]
+) => {
+  const paymentSessionService = {
+    list: jest.fn().mockResolvedValue(sessions),
+    update: jest.fn().mockResolvedValue(undefined),
+  }
+
+  return { paymentSessionService }
+}
+
 const initiateInput = (overrides: Record<string, unknown> = {}) => ({
   amount: { value: "100" },
   currency_code: "BRL",
@@ -123,10 +145,15 @@ describe("Mercado Pago provider service", () => {
       throw new Error(`Unexpected request: ${url}`)
     })
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
     const initiated = await service.initiatePayment(initiateInput())
 
     expect(createBody?.capture).toBe(false)
+    expect(createBody?.binary_mode).toBe(false)
+    expect(createBody?.three_d_secure_mode).toBe("optional")
     expect(createBody?.external_reference).toBe("paycol_cart_1")
     expect(initiated.status).toBe(PaymentSessionStatus.AUTHORIZED)
     expect(initiated.data?.token).toBeNull()
@@ -154,7 +181,7 @@ describe("Mercado Pago provider service", () => {
   })
 
   test("validates credential mode before searching or creating a payment", async () => {
-    const service = new MercadoPagoCardProviderService({}, {
+    const service = new MercadoPagoCardProviderService(serviceContainer(), {
       ...options,
       liveMode: true,
     })
@@ -211,7 +238,10 @@ describe("Mercado Pago provider service", () => {
         return jsonResponse(storedPayment({ status: "cancelled" }))
       })
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
 
     await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
       "payment amount mismatch"
@@ -237,7 +267,10 @@ describe("Mercado Pago provider service", () => {
         })
       )
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
 
     await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
       "unexpectedly captured"
@@ -245,7 +278,7 @@ describe("Mercado Pago provider service", () => {
     expect(fetchMock.mock.calls[2][0]).toContain("/refunds")
   })
 
-  test("reuses a pre-existing payment by payment collection after a lost response", async () => {
+  test("routes a recovered payment webhook only to the current local session", async () => {
     const fingerprint = createPaymentFingerprint({
       amount: 100,
       currencyCode: "BRL",
@@ -261,14 +294,62 @@ describe("Mercado Pago provider service", () => {
         request_fingerprint: fingerprint,
       },
     })
-    fetchMock.mockResolvedValueOnce(jsonResponse({ results: [existing] }))
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [existing] }))
+      .mockResolvedValueOnce(jsonResponse(existing))
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const container = serviceContainer([
+      {
+        id: "payses_lost",
+        data: {
+          ...storedData,
+          session_id: "payses_lost",
+          request_fingerprint: fingerprint,
+        },
+        updated_at: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "payses_1",
+        data: {
+          ...storedData,
+          session_id: "payses_1",
+          request_fingerprint: fingerprint,
+        },
+        updated_at: "2026-01-01T00:01:00.000Z",
+      },
+    ])
+    const service = new MercadoPagoCardProviderService(container, options)
     const result = await service.initiatePayment(initiateInput())
 
     expect(result.id).toBe("12345")
     expect(result.data?.session_id).toBe("payses_1")
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(container.paymentSessionService.update).toHaveBeenCalledWith({
+      id: "payses_1",
+      data: expect.objectContaining({
+        id: "12345",
+        session_id: "payses_1",
+        request_fingerprint: fingerprint,
+      }),
+    })
+
+    const timestamp = String(Date.now())
+    const requestId = "request-recovered"
+    const manifest = `id:12345;request-id:${requestId};ts:${timestamp};`
+    const signature = createHmac("sha256", options.webhookSecret)
+      .update(manifest)
+      .digest("hex")
+    const webhook = await service.getWebhookActionAndData({
+      data: { type: "payment", data_id: "12345" },
+      rawData: "{}",
+      headers: {
+        "x-request-id": requestId,
+        "x-signature": `ts=${timestamp},v1=${signature}`,
+      },
+    })
+
+    expect(webhook.data?.session_id).toBe("payses_1")
+    expect(webhook.data?.session_id).not.toBe("payses_lost")
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   test("reconciles after the create response itself is lost", async () => {
@@ -284,7 +365,10 @@ describe("Mercado Pago provider service", () => {
         jsonResponse({ results: [createdRemotely] })
       )
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
     const result = await service.initiatePayment(initiateInput())
 
     expect(result.id).toBe("12345")
@@ -307,7 +391,10 @@ describe("Mercado Pago provider service", () => {
         return jsonResponse(paymentFromCreate(body))
       })
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
     const result = await service.initiatePayment(
       initiateInput({ token: "different-card-token" })
     )
@@ -330,7 +417,10 @@ describe("Mercado Pago provider service", () => {
       return jsonResponse(paymentFromCreate(body))
     })
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
     await service.initiatePayment(initiateInput())
     await service.initiatePayment(
       initiateInput({ session_id: "payses_2", token: "card-token-2" })
@@ -338,6 +428,124 @@ describe("Mercado Pago provider service", () => {
 
     expect(creationKeys).toHaveLength(2)
     expect(creationKeys[0]).toBe(creationKeys[1])
+  })
+
+  test("does not compensate the winner when concurrent attempts race", async () => {
+    let searchCount = 0
+    let createCount = 0
+    let releaseSearches!: () => void
+    let releaseCreates!: () => void
+    const searchesStarted = new Promise<void>((resolve) => {
+      releaseSearches = resolve
+    })
+    const createsStarted = new Promise<void>((resolve) => {
+      releaseCreates = resolve
+    })
+    const creationKeys: string[] = []
+    let winningPayment: MercadoPagoPayment | undefined
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes("/search?")) {
+        searchCount += 1
+        if (searchCount === 2) {
+          releaseSearches()
+        }
+        await searchesStarted
+        return jsonResponse({ results: [] })
+      }
+
+      if (url.endsWith("/v1/payments") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as MercadoPagoCreatePayment
+        creationKeys.push(
+          String((init.headers as Record<string, string>)["X-Idempotency-Key"])
+        )
+        winningPayment ??= paymentFromCreate(body)
+        createCount += 1
+        if (createCount === 2) {
+          releaseCreates()
+        }
+        await createsStarted
+        return jsonResponse(winningPayment)
+      }
+
+      throw new Error(`Losing attempt tried to mutate the winner: ${url}`)
+    })
+
+    const container = serviceContainer()
+    const firstService = new MercadoPagoCardProviderService(container, options)
+    const secondService = new MercadoPagoCardProviderService(container, options)
+    const outcomes = await Promise.allSettled([
+      firstService.initiatePayment(initiateInput()),
+      secondService.initiatePayment(
+        initiateInput({ session_id: "payses_2", token: "card-token-2" })
+      ),
+    ])
+
+    expect(
+      outcomes.filter(({ status }) => status === "fulfilled")
+    ).toHaveLength(1)
+    expect(
+      outcomes.filter(({ status }) => status === "rejected")
+    ).toHaveLength(1)
+    expect(
+      String(
+        (
+          outcomes.find(
+            ({ status }) => status === "rejected"
+          ) as PromiseRejectedResult
+        ).reason
+      )
+    ).toContain("request fingerprint mismatch")
+    expect(creationKeys).toHaveLength(2)
+    expect(creationKeys[0]).toBe(creationKeys[1])
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url).includes("/refunds") ||
+          (init as RequestInit | undefined)?.method === "PUT"
+      )
+    ).toBe(false)
+  })
+
+  test("returns the continuation payload when a card requires a 3DS challenge", async () => {
+    let createBody: MercadoPagoCreatePayment | undefined
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        createBody = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+        return jsonResponse(
+          paymentFromCreate(createBody, {
+            status: "pending",
+            status_detail: "pending_challenge",
+            three_ds_info: {
+              external_resource_url: "https://issuer.example.test/challenge",
+              creq: "challenge-request",
+            },
+          })
+        )
+      })
+
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+    const result = await service.initiatePayment(initiateInput())
+
+    expect(createBody).toMatchObject({
+      capture: false,
+      binary_mode: false,
+      three_d_secure_mode: "optional",
+    })
+    expect(result.status).toBe(PaymentSessionStatus.PENDING_AUTHORIZATION)
+    expect(result.data).toMatchObject({
+      status: "pending",
+      status_detail: "pending_challenge",
+      three_ds_info: {
+        external_resource_url: "https://issuer.example.test/challenge",
+        creq: "challenge-request",
+      },
+    })
   })
 
   test("refuses an amount/card change while an active payment exists", async () => {
@@ -355,7 +563,10 @@ describe("Mercado Pago provider service", () => {
       })
     )
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
     await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
       "different active Mercado Pago payment"
     )
@@ -385,7 +596,10 @@ describe("Mercado Pago provider service", () => {
         )
       )
 
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
     const result = await service.deletePayment({ data: storedData })
 
     expect(fetchMock.mock.calls[1][0]).toContain("/refunds")
@@ -393,7 +607,10 @@ describe("Mercado Pago provider service", () => {
   })
 
   test("requires a unique refund operation and validates the provider response", async () => {
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
 
     await expect(
       service.refundPayment({ amount: 10, data: storedData })
@@ -423,7 +640,10 @@ describe("Mercado Pago provider service", () => {
   })
 
   test("filters unsupported webhook topics before signature validation", async () => {
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
 
     await expect(
       service.getWebhookActionAndData({
@@ -453,7 +673,16 @@ describe("Mercado Pago provider service", () => {
         })
       )
     )
-    const service = new MercadoPagoCardProviderService({}, options)
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer([
+        {
+          id: "payses_1",
+          data: { ...storedData, id: dataId },
+          updated_at: "2026-01-01T00:00:00.000Z",
+        },
+      ]),
+      options
+    )
 
     const result = await service.getWebhookActionAndData({
       data: {
@@ -506,7 +735,10 @@ describe("Mercado Pago provider service", () => {
       .mockResolvedValueOnce(
         jsonResponse({ ...pixPayment, status: "cancelled" })
       )
-    const service = new MercadoPagoPixProviderService({}, options)
+    const service = new MercadoPagoPixProviderService(
+      serviceContainer(),
+      options
+    )
 
     const result = await service.updatePayment({
       amount: { numeric: 100, toJSON: () => 100, valueOf: () => 100 },

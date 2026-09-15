@@ -37,6 +37,8 @@ export type MercadoPagoCreatePayment = {
   installments?: number
   issuer_id?: number
   capture: boolean
+  binary_mode?: false
+  three_d_secure_mode?: "optional"
   external_reference: string
   notification_url: string
   payer: {
@@ -64,6 +66,10 @@ export type MercadoPagoPayment = {
   captured?: boolean
   transaction_amount_refunded?: number
   date_of_expiration?: string | null
+  three_ds_info?: {
+    external_resource_url?: string | null
+    creq?: string | null
+  } | null
   point_of_interaction?: {
     transaction_data?: {
       qr_code?: string | null
@@ -97,6 +103,10 @@ export type MercadoPagoSessionData = {
       qr_code_base64?: string
       ticket_url?: string
     }
+  }
+  three_ds_info?: {
+    external_resource_url: string
+    creq: string
   }
 }
 

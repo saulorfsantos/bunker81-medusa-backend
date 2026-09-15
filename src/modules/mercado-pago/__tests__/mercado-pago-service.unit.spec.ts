@@ -278,7 +278,7 @@ describe("Mercado Pago provider service", () => {
     expect(fetchMock.mock.calls[2][0]).toContain("/refunds")
   })
 
-  test("routes a recovered payment webhook only to the current local session", async () => {
+  test("does not recover a payment owned by an earlier local session", async () => {
     const fingerprint = createPaymentFingerprint({
       amount: 100,
       currencyCode: "BRL",
@@ -296,7 +296,10 @@ describe("Mercado Pago provider service", () => {
     })
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ results: [existing] }))
-      .mockResolvedValueOnce(jsonResponse(existing))
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+        return jsonResponse(paymentFromCreate(body, { id: 67890 }))
+      })
 
     const container = serviceContainer([
       {
@@ -321,34 +324,9 @@ describe("Mercado Pago provider service", () => {
     const service = new MercadoPagoCardProviderService(container, options)
     const result = await service.initiatePayment(initiateInput())
 
-    expect(result.id).toBe("12345")
+    expect(result.id).toBe("67890")
     expect(result.data?.session_id).toBe("payses_1")
-    expect(container.paymentSessionService.update).toHaveBeenCalledWith({
-      id: "payses_1",
-      data: expect.objectContaining({
-        id: "12345",
-        session_id: "payses_1",
-        request_fingerprint: fingerprint,
-      }),
-    })
-
-    const timestamp = String(Date.now())
-    const requestId = "request-recovered"
-    const manifest = `id:12345;request-id:${requestId};ts:${timestamp};`
-    const signature = createHmac("sha256", options.webhookSecret)
-      .update(manifest)
-      .digest("hex")
-    const webhook = await service.getWebhookActionAndData({
-      data: { type: "payment", data_id: "12345" },
-      rawData: "{}",
-      headers: {
-        "x-request-id": requestId,
-        "x-signature": `ts=${timestamp},v1=${signature}`,
-      },
-    })
-
-    expect(webhook.data?.session_id).toBe("payses_1")
-    expect(webhook.data?.session_id).not.toBe("payses_lost")
+    expect(container.paymentSessionService.update).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
@@ -376,11 +354,106 @@ describe("Mercado Pago provider service", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
+  test("does not recover a canceled payment with the same fingerprint from another session", async () => {
+    const fingerprint = createPaymentFingerprint({
+      amount: 100,
+      currencyCode: "BRL",
+      providerKind: "card",
+      paymentMethodId: "visa",
+      token: "card-token-1",
+      installments: 1,
+    })
+    const canceled = storedPayment({
+      status: "cancelled",
+      metadata: {
+        ...storedPayment().metadata,
+        payment_session_id: "payses_canceled",
+        request_fingerprint: fingerprint,
+      },
+    })
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [canceled] }))
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+        return jsonResponse(paymentFromCreate(body, { id: 67891 }))
+      })
+
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+    const result = await service.initiatePayment(initiateInput())
+
+    expect(result.id).toBe("67891")
+    expect(result.data?.session_id).toBe("payses_1")
+    expect(fetchMock.mock.calls[1][1]?.method).toBe("POST")
+  })
+
+  test("does not reconcile a terminal payment owned by the current session", async () => {
+    const fingerprint = createPaymentFingerprint({
+      amount: 100,
+      currencyCode: "BRL",
+      providerKind: "card",
+      paymentMethodId: "visa",
+      token: "card-token-1",
+      installments: 1,
+    })
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        results: [
+          storedPayment({
+            status: "cancelled",
+            metadata: {
+              ...storedPayment().metadata,
+              request_fingerprint: fingerprint,
+            },
+          }),
+        ],
+      })
+    )
+
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+
+    await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
+      "terminal Mercado Pago payment"
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("keeps the creation key stable when retrying the same payment session", async () => {
+    const creationKeys: string[] = []
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes("/search?")) {
+        return jsonResponse({ results: [] })
+      }
+
+      const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+      creationKeys.push(
+        String((init?.headers as Record<string, string>)["X-Idempotency-Key"])
+      )
+      return jsonResponse(paymentFromCreate(body))
+    })
+
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+    await service.initiatePayment(initiateInput())
+    await service.initiatePayment(initiateInput())
+
+    expect(creationKeys).toHaveLength(2)
+    expect(creationKeys[0]).toBe(creationKeys[1])
+  })
+
   test("allows a new card token after a rejected attempt", async () => {
     const rejected = storedPayment({
       status: "rejected",
       metadata: {
         ...storedPayment().metadata,
+        payment_session_id: "payses_rejected",
         request_fingerprint: "old-card-fingerprint",
       },
     })
@@ -403,7 +476,7 @@ describe("Mercado Pago provider service", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  test("shares the first-attempt key across concurrent cart payment methods", async () => {
+  test("uses a different creation key for every new payment session", async () => {
     const creationKeys: string[] = []
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes("/search?")) {
@@ -427,7 +500,151 @@ describe("Mercado Pago provider service", () => {
     )
 
     expect(creationKeys).toHaveLength(2)
-    expect(creationKeys[0]).toBe(creationKeys[1])
+    expect(creationKeys[0]).not.toBe(creationKeys[1])
+  })
+
+  test("creates a fresh Pix attempt across Pix to card to Pix session changes", async () => {
+    const createdPayments: MercadoPagoPayment[] = []
+    const creationKeys: string[] = []
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes("/search?")) {
+        return jsonResponse({ results: createdPayments })
+      }
+
+      const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+      const payment = paymentFromCreate(body, {
+        id: 20000 + createdPayments.length,
+      })
+      creationKeys.push(
+        String((init?.headers as Record<string, string>)["X-Idempotency-Key"])
+      )
+      createdPayments.push(payment)
+      return jsonResponse(payment)
+    })
+
+    const pixService = new MercadoPagoPixProviderService(
+      serviceContainer(),
+      options
+    )
+    const cardService = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+    const firstPix = await pixService.initiatePayment(
+      initiateInput({
+        session_id: "payses_pix_1",
+        payer_identification: { type: "CPF", number: "unit-only" },
+      })
+    )
+    await cardService.initiatePayment(
+      initiateInput({ session_id: "payses_card_1" })
+    )
+    const secondPix = await pixService.initiatePayment(
+      initiateInput({
+        session_id: "payses_pix_2",
+        payer_identification: { type: "CPF", number: "unit-only" },
+      })
+    )
+
+    expect(firstPix.id).toBe("20000")
+    expect(secondPix.id).toBe("20002")
+    expect(createdPayments).toHaveLength(3)
+    expect(new Set(creationKeys).size).toBe(3)
+  })
+
+  test("old-session cancellation racing new-session creation cannot cancel the new Pix", async () => {
+    const fingerprint = createPaymentFingerprint({
+      amount: 100,
+      currencyCode: "BRL",
+      providerKind: "pix",
+      paymentMethodId: "pix",
+    })
+    const oldPayment = storedPayment({
+      id: 31001,
+      status: "pending",
+      captured: true,
+      payment_method_id: "pix",
+      payment_type_id: "bank_transfer",
+      metadata: {
+        ...storedPayment().metadata,
+        payment_session_id: "payses_pix_old",
+        provider_kind: "pix",
+        request_fingerprint: fingerprint,
+      },
+    })
+    const oldData = {
+      ...storedData,
+      id: "31001",
+      session_id: "payses_pix_old",
+      provider_kind: "pix",
+      status: "pending",
+      payment_method_id: "pix",
+      payment_type_id: "bank_transfer",
+      request_fingerprint: fingerprint,
+    }
+    let markCancelStarted!: () => void
+    let releaseCancel!: () => void
+    const cancelStarted = new Promise<void>((resolve) => {
+      markCancelStarted = resolve
+    })
+    const cancelMayFinish = new Promise<void>((resolve) => {
+      releaseCancel = resolve
+    })
+
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/v1/payments/31001") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse(oldPayment)
+      }
+      if (url.endsWith("/v1/payments/31001") && init?.method === "PUT") {
+        markCancelStarted()
+        await cancelMayFinish
+        return jsonResponse({ ...oldPayment, status: "cancelled" })
+      }
+      if (url.includes("/search?")) {
+        return jsonResponse({ results: [oldPayment] })
+      }
+      if (url.endsWith("/v1/payments") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as MercadoPagoCreatePayment
+        return jsonResponse(paymentFromCreate(body, { id: 31002 }))
+      }
+
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    const oldService = new MercadoPagoPixProviderService(
+      serviceContainer(),
+      options
+    )
+    const newService = new MercadoPagoPixProviderService(
+      serviceContainer(),
+      options
+    )
+    const cancelPromise = oldService.cancelPayment({ data: oldData })
+    await cancelStarted
+
+    let newAttempt
+    try {
+      newAttempt = await newService.initiatePayment(
+        initiateInput({
+          session_id: "payses_pix_new",
+          payer_identification: { type: "CPF", number: "unit-only" },
+        })
+      )
+    } finally {
+      releaseCancel()
+    }
+    const canceledAttempt = await cancelPromise
+
+    expect(newAttempt.id).toBe("31002")
+    expect(newAttempt.data?.session_id).toBe("payses_pix_new")
+    expect(canceledAttempt.data?.id).toBe("31001")
+    expect(canceledAttempt.data?.status).toBe("cancelled")
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("/refunds"))
+    ).toBe(false)
   })
 
   test("does not compensate the winner when concurrent attempts race", async () => {
@@ -495,9 +712,9 @@ describe("Mercado Pago provider service", () => {
           ) as PromiseRejectedResult
         ).reason
       )
-    ).toContain("request fingerprint mismatch")
+    ).toContain("session ownership mismatch")
     expect(creationKeys).toHaveLength(2)
-    expect(creationKeys[0]).toBe(creationKeys[1])
+    expect(creationKeys[0]).not.toBe(creationKeys[1])
     expect(fetchMock).toHaveBeenCalledTimes(4)
     expect(
       fetchMock.mock.calls.some(
@@ -546,6 +763,68 @@ describe("Mercado Pago provider service", () => {
         creq: "challenge-request",
       },
     })
+  })
+
+  test("preserves stored 3DS continuation when pending GET responses omit it", async () => {
+    const pendingChallenge = storedPayment({
+      status: "pending",
+      status_detail: "pending_challenge",
+      three_ds_info: undefined,
+    })
+    const challengeData = {
+      ...storedData,
+      status: "pending",
+      status_detail: "pending_challenge",
+      three_ds_info: {
+        external_resource_url: "https://issuer.example.test/challenge",
+        creq: "stored-challenge-request",
+      },
+    }
+    fetchMock.mockImplementation(async () => jsonResponse(pendingChallenge))
+
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+    const status = await service.getPaymentStatus({ data: challengeData })
+    const authorized = await service.authorizePayment({ data: challengeData })
+    const retrieved = await service.retrievePayment({ data: challengeData })
+    const updated = await service.updatePayment({
+      amount: { value: "100" },
+      currency_code: "BRL",
+      data: challengeData,
+    })
+
+    for (const result of [status, authorized, retrieved, updated]) {
+      expect(result.data).toMatchObject({
+        three_ds_info: challengeData.three_ds_info,
+      })
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  test("continues to reject non-HTTPS 3DS challenge URLs", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        storedPayment({
+          status: "pending",
+          status_detail: "pending_challenge",
+          three_ds_info: {
+            external_resource_url: "http://issuer.example.test/challenge",
+            creq: "challenge-request",
+          },
+        })
+      )
+    )
+
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer(),
+      options
+    )
+
+    await expect(
+      service.getPaymentStatus({ data: storedData })
+    ).rejects.toThrow("3DS challenge URL must use HTTPS")
   })
 
   test("refuses an amount/card change while an active payment exists", async () => {
@@ -700,6 +979,84 @@ describe("Mercado Pago provider service", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("/payments/abc123")
     expect(result.action).toBe(PaymentActions.SUCCESSFUL)
     expect(result.data?.session_id).toBe("payses_1")
+  })
+
+  test("ignores a valid payment webhook when no live session owns it", async () => {
+    const now = Date.now()
+    const timestamp = String(now)
+    const dataId = "orphan-123"
+    const requestId = "request-orphan"
+    const manifest = `id:${dataId};request-id:${requestId};ts:${timestamp};`
+    const signature = createHmac("sha256", options.webhookSecret)
+      .update(manifest)
+      .digest("hex")
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        storedPayment({
+          id: dataId,
+          status: "approved",
+          captured: true,
+        })
+      )
+    )
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer([]),
+      options
+    )
+
+    await expect(
+      service.getWebhookActionAndData({
+        data: { type: "payment", data_id: dataId },
+        rawData: "{}",
+        headers: {
+          "x-request-id": requestId,
+          "x-signature": `ts=${timestamp},v1=${signature}`,
+        },
+      })
+    ).resolves.toEqual({ action: PaymentActions.NOT_SUPPORTED })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("does not mask an ownership error for a webhook with an active session", async () => {
+    const timestamp = String(Date.now())
+    const dataId = "active-123"
+    const requestId = "request-active"
+    const manifest = `id:${dataId};request-id:${requestId};ts:${timestamp};`
+    const signature = createHmac("sha256", options.webhookSecret)
+      .update(manifest)
+      .digest("hex")
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        storedPayment({
+          id: dataId,
+          metadata: {
+            ...storedPayment().metadata,
+            request_fingerprint: "unexpected-fingerprint",
+          },
+        })
+      )
+    )
+    const service = new MercadoPagoCardProviderService(
+      serviceContainer([
+        {
+          id: "payses_1",
+          data: { ...storedData, id: dataId },
+          updated_at: "2026-01-01T00:00:00.000Z",
+        },
+      ]),
+      options
+    )
+
+    await expect(
+      service.getWebhookActionAndData({
+        data: { type: "payment", data_id: dataId },
+        rawData: "{}",
+        headers: {
+          "x-request-id": requestId,
+          "x-signature": `ts=${timestamp},v1=${signature}`,
+        },
+      })
+    ).rejects.toThrow("fingerprint mismatch for webhook")
   })
 
   test("retries a transient request with bounded backoff", async () => {

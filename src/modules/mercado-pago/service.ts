@@ -250,6 +250,7 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     data,
     context,
   }: InitiatePaymentInput): Promise<InitiatePaymentOutput> {
+    const previousSessionData = toRecord(data)
     const sessionInput = toSessionInput(data)
     const sessionId = requireString(sessionInput.session_id, "Payment session ID")
     const stableReference = requireStableReference(
@@ -283,7 +284,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       existingPayments,
       stableReference,
       normalizedAmount,
-      requestFingerprint
+      requestFingerprint,
+      sessionId
     )
 
     if (existingPayment) {
@@ -301,7 +303,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         existingPayment,
         sessionId,
         stableReference,
-        requestFingerprint
+        requestFingerprint,
+        previousSessionData
       )
       await this.bindRecoveredPaymentSession(sessionId, sessionData)
 
@@ -312,16 +315,12 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       }
     }
 
-    const hasTerminalAttempt = existingPayments.some(
-      (payment) =>
-        payment.external_reference === stableReference &&
-        FAILED_PAYMENT_STATUSES.has(payment.status)
-    )
     const idempotencyKey = createIdempotencyKey({
       stableReference,
       operation: "create",
-      providerKind: "payment",
-      requestFingerprint: hasTerminalAttempt ? requestFingerprint : undefined,
+      providerKind: this.providerKind,
+      requestFingerprint,
+      medusaOperationId: sessionId,
     })
 
     const body: MercadoPagoCreatePayment = {
@@ -359,7 +358,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         await this.client_.searchPayments(stableReference),
         stableReference,
         normalizedAmount,
-        requestFingerprint
+        requestFingerprint,
+        sessionId
       )
 
       if (!recovered) {
@@ -375,7 +375,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         payment,
         stableReference,
         normalizedAmount,
-        requestFingerprint
+        requestFingerprint,
+        sessionId
       )
       if (
         this.providerKind === "card" &&
@@ -389,14 +390,16 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         payment,
         sessionId,
         stableReference,
-        requestFingerprint
+        requestFingerprint,
+        previousSessionData
       )
     } catch (error) {
       if (
         this.ownsPaymentAttempt(
           payment,
           stableReference,
-          requestFingerprint
+          requestFingerprint,
+          sessionId
         )
       ) {
         await this.compensateCreatedPayment(payment, stableReference)
@@ -433,14 +436,16 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     const payment = await this.expirePixPaymentIfNecessary(
       await this.client_.getPayment(paymentId),
       stableReference,
-      requestFingerprint
+      requestFingerprint,
+      sessionId
     )
 
     this.assertPaymentIdentity(
       payment,
       stableReference,
       expectedAmount,
-      requestFingerprint
+      requestFingerprint,
+      sessionId
     )
 
     return {
@@ -449,7 +454,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         payment,
         sessionId,
         stableReference,
-        requestFingerprint
+        requestFingerprint,
+        data
       ),
     }
   }
@@ -480,14 +486,16 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     const payment = await this.expirePixPaymentIfNecessary(
       await this.client_.getPayment(paymentId),
       stableReference,
-      requestFingerprint
+      requestFingerprint,
+      sessionId
     )
 
     this.assertPaymentIdentity(
       payment,
       stableReference,
       expectedAmount,
-      requestFingerprint
+      requestFingerprint,
+      sessionId
     )
 
     return {
@@ -496,7 +504,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         payment,
         sessionId,
         stableReference,
-        requestFingerprint
+        requestFingerprint,
+        storedData
       ),
     }
   }
@@ -516,14 +525,21 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     )
     const payment = await this.client_.getPayment(paymentId)
 
-    this.assertPaymentIdentity(payment, stableReference)
+    this.assertPaymentIdentity(
+      payment,
+      stableReference,
+      undefined,
+      requestFingerprint,
+      sessionId
+    )
 
     return {
       data: this.toSessionData(
         payment,
         sessionId,
         stableReference,
-        requestFingerprint
+        requestFingerprint,
+        storedData
       ),
     }
   }
@@ -547,7 +563,13 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     )
     let payment = await this.client_.getPayment(paymentId)
 
-    this.assertPaymentIdentity(payment, stableReference)
+    this.assertPaymentIdentity(
+      payment,
+      stableReference,
+      undefined,
+      requestFingerprint,
+      sessionId
+    )
     await this.client_.validateEnvironment(this.options_.liveMode)
 
     if (payment.status === "authorized") {
@@ -561,7 +583,13 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
           medusaOperationId: operationId,
         })
       )
-      this.assertPaymentIdentity(payment, stableReference)
+      this.assertPaymentIdentity(
+        payment,
+        stableReference,
+        undefined,
+        requestFingerprint,
+        sessionId
+      )
     }
 
     if (payment.status !== "approved" || payment.captured !== true) {
@@ -573,7 +601,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         payment,
         sessionId,
         stableReference,
-        requestFingerprint
+        requestFingerprint,
+        storedData
       ),
     }
   }
@@ -598,7 +627,13 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     )
     const current = await this.client_.getPayment(paymentId)
 
-    this.assertPaymentIdentity(current, stableReference)
+    this.assertPaymentIdentity(
+      current,
+      stableReference,
+      undefined,
+      requestFingerprint,
+      sessionId
+    )
 
     if (CANCELED_STATUSES.has(current.status) || current.status === "rejected") {
       return {
@@ -606,7 +641,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
           current,
           sessionId,
           stableReference,
-          requestFingerprint
+          requestFingerprint,
+          storedData
         ),
       }
     }
@@ -632,7 +668,13 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       }
 
       const refunded = await this.client_.getPayment(paymentId)
-      this.assertPaymentIdentity(refunded, stableReference)
+      this.assertPaymentIdentity(
+        refunded,
+        stableReference,
+        undefined,
+        requestFingerprint,
+        sessionId
+      )
 
       if (
         refunded.status !== "refunded" &&
@@ -646,7 +688,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
           refunded,
           sessionId,
           stableReference,
-          requestFingerprint
+          requestFingerprint,
+          storedData
         ),
       }
     }
@@ -662,10 +705,17 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       operation: "cancel",
       providerKind: this.providerKind,
       requestFingerprint,
+      medusaOperationId: sessionId,
     })
     const canceled = await this.client_.cancelPayment(paymentId, idempotencyKey)
 
-    this.assertPaymentIdentity(canceled, stableReference)
+    this.assertPaymentIdentity(
+      canceled,
+      stableReference,
+      undefined,
+      requestFingerprint,
+      sessionId
+    )
 
     if (!CANCELED_STATUSES.has(canceled.status)) {
       throw new Error("Mercado Pago did not confirm payment cancellation")
@@ -676,7 +726,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         canceled,
         sessionId,
         stableReference,
-        requestFingerprint
+        requestFingerprint,
+        storedData
       ),
     }
   }
@@ -690,8 +741,13 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
   ): Promise<RefundPaymentOutput> {
     const storedData = toRecord(input.data)
     const paymentId = requireString(storedData.id, "Mercado Pago payment ID")
+    const sessionId = requireString(storedData.session_id, "Payment session ID")
     const stableReference = requireStableReference(
       storedData.payment_collection_id
+    )
+    const requestFingerprint = requireString(
+      storedData.request_fingerprint,
+      "Request fingerprint"
     )
     const amount = toPositiveNumber(input.amount, "Refund amount")
     const operationId = requireString(
@@ -700,7 +756,13 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     )
     const current = await this.client_.getPayment(paymentId)
 
-    this.assertPaymentIdentity(current, stableReference)
+    this.assertPaymentIdentity(
+      current,
+      stableReference,
+      undefined,
+      requestFingerprint,
+      sessionId
+    )
 
     if (current.status !== "approved") {
       throw new Error("Only approved Mercado Pago payments can be refunded")
@@ -710,7 +772,7 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       stableReference,
       operation: "refund",
       providerKind: this.providerKind,
-      requestFingerprint: String(storedData.request_fingerprint || ""),
+      requestFingerprint,
       medusaOperationId: operationId,
     })
 
@@ -766,10 +828,20 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       metadata.payment_collection_id || payment.external_reference
     )
 
-    this.assertPaymentIdentity(payment, stableReference)
     const sessionId = await this.resolveWebhookSessionId(
       payment,
       stableReference
+    )
+    if (!sessionId) {
+      return { action: PaymentActions.NOT_SUPPORTED }
+    }
+
+    this.assertPaymentIdentity(
+      payment,
+      stableReference,
+      undefined,
+      requireString(metadata.request_fingerprint, "Request fingerprint"),
+      sessionId
     )
 
     return {
@@ -795,7 +867,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     payments: MercadoPagoPayment[],
     stableReference: string,
     expectedAmount: number,
-    requestFingerprint: string
+    requestFingerprint: string,
+    sessionId: string
   ): MercadoPagoPayment | undefined {
     for (const payment of payments) {
       if (payment.external_reference !== stableReference) {
@@ -803,6 +876,16 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       }
 
       const metadata = toRecord(payment.metadata)
+      if (metadata.payment_session_id !== sessionId) {
+        continue
+      }
+
+      if (FAILED_PAYMENT_STATUSES.has(payment.status)) {
+        throw new Error(
+          "A terminal Mercado Pago payment cannot be reused by the same payment session"
+        )
+      }
+
       const existingFingerprint = String(metadata.request_fingerprint || "")
 
       if (existingFingerprint === requestFingerprint) {
@@ -810,16 +893,15 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
           payment,
           stableReference,
           expectedAmount,
-          requestFingerprint
+          requestFingerprint,
+          sessionId
         )
         return payment
       }
 
-      if (!FAILED_PAYMENT_STATUSES.has(payment.status)) {
-        throw new Error(
-          "A different active Mercado Pago payment already exists for this payment collection"
-        )
-      }
+      throw new Error(
+        "A different active Mercado Pago payment already exists for this payment session"
+      )
     }
 
     return undefined
@@ -885,12 +967,14 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
   private ownsPaymentAttempt(
     payment: MercadoPagoPayment,
     stableReference: string,
-    requestFingerprint: string
+    requestFingerprint: string,
+    sessionId: string
   ): boolean {
     const metadata = toRecord(payment.metadata)
 
     return (
       payment.external_reference === stableReference &&
+      metadata.payment_session_id === sessionId &&
       metadata.payment_collection_id === stableReference &&
       metadata.provider_kind === this.providerKind &&
       metadata.request_fingerprint === requestFingerprint
@@ -907,27 +991,36 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
   private async resolveWebhookSessionId(
     payment: MercadoPagoPayment,
     stableReference: string
-  ): Promise<string> {
+  ): Promise<string | undefined> {
     const paymentId = String(payment.id)
-    const requestFingerprint = requireString(
-      toRecord(payment.metadata).request_fingerprint,
-      "Request fingerprint"
-    )
     const sessions = await this.paymentSessionStore_.list(
       { payment_collection_id: stableReference },
       { order: { updated_at: "DESC" } }
     )
-    const matchingSessions = sessions
+    const sessionsForPayment = sessions.filter((session) => {
+      const data = toRecord(session.data)
+
+      return (
+        data.id === paymentId &&
+        data.session_id === session.id &&
+        data.payment_collection_id === stableReference &&
+        data.provider_kind === this.providerKind
+      )
+    })
+
+    if (!sessionsForPayment.length) {
+      return undefined
+    }
+
+    const requestFingerprint = requireString(
+      toRecord(payment.metadata).request_fingerprint,
+      "Request fingerprint"
+    )
+    const matchingSessions = sessionsForPayment
       .filter((session) => {
         const data = toRecord(session.data)
 
-        return (
-          data.id === paymentId &&
-          data.session_id === session.id &&
-          data.payment_collection_id === stableReference &&
-          data.provider_kind === this.providerKind &&
-          data.request_fingerprint === requestFingerprint
-        )
+        return data.request_fingerprint === requestFingerprint
       })
       .sort((left, right) => {
         const leftUpdatedAt = Date.parse(
@@ -943,7 +1036,7 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
 
     if (!matchingSessions.length) {
       throw new Error(
-        "Current Medusa payment session could not be resolved for webhook"
+        "Active Medusa payment session fingerprint mismatch for webhook"
       )
     }
 
@@ -956,7 +1049,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
   private async expirePixPaymentIfNecessary(
     payment: MercadoPagoPayment,
     stableReference: string,
-    requestFingerprint: string
+    requestFingerprint: string,
+    sessionId: string
   ): Promise<MercadoPagoPayment> {
     if (
       this.providerKind !== "pix" ||
@@ -971,6 +1065,14 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       return payment
     }
 
+    this.assertPaymentIdentity(
+      payment,
+      stableReference,
+      undefined,
+      requestFingerprint,
+      sessionId
+    )
+
     const canceled = await this.client_.cancelPayment(
       String(payment.id),
       createIdempotencyKey({
@@ -978,7 +1080,7 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
         operation: "cancel",
         providerKind: this.providerKind,
         requestFingerprint,
-        medusaOperationId: "pix-expiration",
+        medusaOperationId: `pix-expiration:${sessionId}`,
       })
     )
 
@@ -1026,7 +1128,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     payment: MercadoPagoPayment,
     stableReference: string,
     expectedAmount?: number,
-    expectedFingerprint?: string
+    expectedFingerprint?: string,
+    expectedSessionId?: string
   ): void {
     if (payment.id === undefined || payment.id === null) {
       throw new Error("Mercado Pago payment ID is missing")
@@ -1047,6 +1150,13 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     const metadata = toRecord(payment.metadata)
     if (metadata.payment_collection_id !== stableReference) {
       throw new Error("Mercado Pago payment metadata reference mismatch")
+    }
+
+    if (
+      expectedSessionId &&
+      metadata.payment_session_id !== expectedSessionId
+    ) {
+      throw new Error("Mercado Pago payment session ownership mismatch")
     }
 
     if (metadata.provider_kind !== this.providerKind) {
@@ -1095,7 +1205,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
     payment: MercadoPagoPayment,
     sessionId: string,
     stableReference: string,
-    requestFingerprint: string
+    requestFingerprint: string,
+    previousSessionData: Record<string, unknown> = {}
   ): MercadoPagoSessionData {
     const transactionData = payment.point_of_interaction?.transaction_data
     const publicTransactionData = transactionData
@@ -1105,7 +1216,7 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
           ticket_url: transactionData.ticket_url || undefined,
         }
       : undefined
-    const threeDsInfo = this.toThreeDsInfo(payment)
+    const threeDsInfo = this.toThreeDsInfo(payment, previousSessionData)
 
     return {
       id: String(payment.id),
@@ -1132,7 +1243,8 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
   }
 
   private toThreeDsInfo(
-    payment: MercadoPagoPayment
+    payment: MercadoPagoPayment,
+    previousSessionData: Record<string, unknown>
   ): MercadoPagoSessionData["three_ds_info"] {
     if (
       this.providerKind !== "card" ||
@@ -1142,16 +1254,38 @@ abstract class MercadoPagoBaseProviderService extends AbstractPaymentProvider<Me
       return undefined
     }
 
+    const remoteThreeDsInfo = toRecord(payment.three_ds_info)
+    const storedThreeDsInfo = toRecord(previousSessionData.three_ds_info)
+    const threeDsInfo = Object.keys(remoteThreeDsInfo).length
+      ? remoteThreeDsInfo
+      : storedThreeDsInfo
+
+    if (!Object.keys(threeDsInfo).length) {
+      return undefined
+    }
+
     const challengeUrl = requireString(
-      payment.three_ds_info?.external_resource_url,
+      threeDsInfo.external_resource_url,
       "Mercado Pago 3DS challenge URL"
     )
     const creq = requireString(
-      payment.three_ds_info?.creq,
+      threeDsInfo.creq,
       "Mercado Pago 3DS challenge request"
     )
 
-    if (new URL(challengeUrl).protocol !== "https:") {
+    let parsedChallengeUrl: URL
+    try {
+      parsedChallengeUrl = new URL(challengeUrl)
+    } catch {
+      throw new Error("Mercado Pago 3DS challenge URL is invalid")
+    }
+
+    if (
+      parsedChallengeUrl.protocol !== "https:" ||
+      !parsedChallengeUrl.hostname ||
+      parsedChallengeUrl.username ||
+      parsedChallengeUrl.password
+    ) {
       throw new Error("Mercado Pago 3DS challenge URL must use HTTPS")
     }
 

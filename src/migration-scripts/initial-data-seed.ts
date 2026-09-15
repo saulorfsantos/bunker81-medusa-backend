@@ -35,6 +35,30 @@ export default async function initial_data_seed({
   );
 
   const countries = ["gb", "de", "dk", "se", "fr", "es", "it"];
+  const mercadoPagoConfigured = Boolean(
+    process.env.MERCADO_PAGO_ACCESS_TOKEN &&
+      process.env.MERCADO_PAGO_WEBHOOK_SECRET &&
+      (process.env.MERCADO_PAGO_WEBHOOK_BASE_URL ||
+        process.env.MEDUSA_BACKEND_URL) &&
+      ["true", "false"].includes(process.env.MERCADO_PAGO_LIVE_MODE || "")
+  );
+  const isProduction = process.env.NODE_ENV === "production";
+
+  if (isProduction && !mercadoPagoConfigured) {
+    throw new Error(
+      "Mercado Pago must be configured before seeding the Brazil region in production"
+    );
+  }
+
+  const brazilPaymentProviders = [
+    ...(!isProduction ? ["pp_system_default"] : []),
+    ...(mercadoPagoConfigured
+      ? [
+          "pp_mercadopago-pix_mercadopago",
+          "pp_mercadopago-card_mercadopago",
+        ]
+      : []),
+  ];
 
   logger.info("Seeding store data...");
   const {
@@ -87,6 +111,10 @@ export default async function initial_data_seed({
               currency_code: "usd",
               is_default: false,
             },
+            {
+              currency_code: "brl",
+              is_default: false,
+            },
           ],
           default_sales_channel_id: defaultSalesChannel.id,
         },
@@ -104,6 +132,12 @@ export default async function initial_data_seed({
           countries,
           payment_providers: ["pp_system_default"],
         },
+        {
+          name: "Brazil",
+          currency_code: "brl",
+          countries: ["br"],
+          payment_providers: brazilPaymentProviders,
+        },
       ],
     },
   });
@@ -112,7 +146,7 @@ export default async function initial_data_seed({
 
   logger.info("Seeding tax regions...");
   await createTaxRegionsWorkflow(container).run({
-    input: countries.map((country_code) => ({
+    input: [...countries, "br"].map((country_code) => ({
       country_code,
       provider_id: "tp_system",
     })),

@@ -17,6 +17,7 @@ const MercadoPagoAttempt = model
       "compensated",
       "resolved_terminal",
       "manual_review",
+      "reviewed",
     ]),
     reconcile_after: model.dateTime(),
     remote_payment_id: model.text().nullable(),
@@ -28,6 +29,9 @@ const MercadoPagoAttempt = model
     bound_at: model.dateTime().nullable(),
     compensated_at: model.dateTime().nullable(),
     manual_review_at: model.dateTime().nullable(),
+    reviewed_at: model.dateTime().nullable(),
+    reviewed_by: model.text().nullable(),
+    review_note: model.text().nullable(),
   })
   .indexes([
     {
@@ -36,7 +40,7 @@ const MercadoPagoAttempt = model
     },
     {
       name: "IDX_mp_attempt_reconcile_after",
-      on: ["reconcile_after"],
+      on: ["state", "reconcile_after"],
     },
     {
       name: "IDX_mp_attempt_remote_payment",

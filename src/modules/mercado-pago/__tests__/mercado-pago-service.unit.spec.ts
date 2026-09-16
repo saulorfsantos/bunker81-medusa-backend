@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto"
 import { PaymentActions, PaymentSessionStatus } from "@medusajs/framework/utils"
 import { MercadoPagoClient } from "../client"
 import { createAttemptId } from "../attempts"
-import { createPaymentFingerprint } from "../idempotency"
+import { createIdempotencyKey, createPaymentFingerprint } from "../idempotency"
 import {
   MercadoPagoCardProviderService,
   MercadoPagoPixProviderService,
@@ -121,13 +121,13 @@ const serviceContainer = (
     retrieveMercadoPagoAttempt: jest.fn().mockImplementation(async (id: string) => {
       const attempt = attempts.get(id)
       if (!attempt) {
-        throw new Error("attempt not found")
+        throw Object.assign(new Error("attempt not found"), { type: "not_found" })
       }
       return attempt
     }),
     createMercadoPagoAttempts: jest.fn().mockImplementation(async (data) => {
       if (attempts.has(data.id)) {
-        throw new Error("duplicate attempt")
+        throw Object.assign(new Error("duplicate attempt"), { code: "23505" })
       }
       const attempt = {
         ...data,
@@ -488,6 +488,238 @@ describe("Mercado Pago provider service", () => {
     })
   })
 
+  test.each([
+    ["transport timeout", new TypeError("simulated timeout")],
+    ["HTTP 5xx", jsonResponse({}, 503)],
+  ])(
+    "allows a new card fingerprint after an ambiguous %s create failure",
+    async (_label, failure) => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ results: [] }))
+        .mockImplementationOnce(async () => {
+          if (failure instanceof Response) return failure
+          throw failure
+        })
+        .mockResolvedValueOnce(jsonResponse({ results: [] }))
+        .mockResolvedValueOnce(jsonResponse({ results: [] }))
+        .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+          return jsonResponse(paymentFromCreate(body, { id: 99002 }))
+        })
+
+      const container = serviceContainer()
+      const service = new MercadoPagoCardProviderService(container, options)
+
+      await expect(service.initiatePayment(initiateInput())).rejects.toThrow()
+      const retry = await service.initiatePayment(
+        initiateInput({ token: "fresh-card-token" })
+      )
+
+      expect(retry.id).toBe("99002")
+      expect(
+        Array.from(container.attempts.values()).map((attempt) => attempt.state)
+      ).toEqual(expect.arrayContaining(["creating", "bound"]))
+    }
+  )
+
+  test("closes a definitive HTTP 400 create failure without recovery polling", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockResolvedValueOnce(jsonResponse({}, 400))
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+        return jsonResponse(paymentFromCreate(body, { id: 99003 }))
+      })
+
+    const container = serviceContainer()
+    const service = new MercadoPagoCardProviderService(container, options)
+    await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
+      "HTTP 400"
+    )
+
+    expect(Array.from(container.attempts.values())[0]).toMatchObject({
+      state: "resolved_terminal",
+      last_error_code: "create_rejected_http_400",
+    })
+    const retry = await service.initiatePayment(
+      initiateInput({ token: "fresh-card-token" })
+    )
+    expect(retry.id).toBe("99003")
+  })
+
+  test("allows Pix fallback after an ambiguous card create failure", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockRejectedValueOnce(new TypeError("simulated timeout"))
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+        return jsonResponse(paymentFromCreate(body, { id: 99004 }))
+      })
+
+    const container = serviceContainer()
+    const card = new MercadoPagoCardProviderService(container, options)
+    const pix = new MercadoPagoPixProviderService(container, options)
+    await expect(card.initiatePayment(initiateInput())).rejects.toThrow(
+      "simulated timeout"
+    )
+    const fallback = await pix.initiatePayment(
+      initiateInput({
+        session_id: "payses_pix_fallback",
+        payer_identification: { type: "CPF", number: "unit-only" },
+      })
+    )
+
+    expect(fallback.id).toBe("99004")
+    expect(fallback.data?.provider_kind).toBe("pix")
+  })
+
+  test("does not let an old manual review attempt brick a new session", async () => {
+    const container = serviceContainer()
+    container.attempts.set("mpatt_old_review", {
+      id: "mpatt_old_review",
+      payment_session_id: "payses_old",
+      payment_collection_id: "paycol_cart_1",
+      provider_kind: "card",
+      request_fingerprint: "old-fingerprint",
+      idempotency_key: "old-key",
+      amount: 100,
+      currency_code: "brl",
+      state: "manual_review",
+      reconcile_after: new Date(0),
+      created_at: new Date(0),
+    })
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [] }))
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+        return jsonResponse(paymentFromCreate(body, { id: 99005 }))
+      })
+
+    const service = new MercadoPagoCardProviderService(container, options)
+    const result = await service.initiatePayment(
+      initiateInput({ session_id: "payses_new" })
+    )
+
+    expect(result.id).toBe("99005")
+    expect(container.attempts.get("mpatt_old_review")?.state).toBe(
+      "manual_review"
+    )
+  })
+
+  test.each(["manual_review", "reviewed"] as const)(
+    "never adopts or compensates a winner from an exact %s attempt",
+    async (state) => {
+      const fingerprint = createPaymentFingerprint({
+        amount: 100,
+        currencyCode: "BRL",
+        providerKind: "card",
+        paymentMethodId: "visa",
+        token: "card-token-1",
+        installments: 1,
+      })
+      const container = serviceContainer()
+      const attemptId = createAttemptId({
+        sessionId: "payses_1",
+        providerKind: "card",
+        requestFingerprint: fingerprint,
+      })
+      container.attempts.set(attemptId, {
+        id: attemptId,
+        payment_session_id: "payses_1",
+        payment_collection_id: "paycol_cart_1",
+        provider_kind: "card",
+        request_fingerprint: fingerprint,
+        idempotency_key: createIdempotencyKey({
+          stableReference: "paycol_cart_1",
+          operation: "create",
+          providerKind: "card",
+          requestFingerprint: fingerprint,
+          medusaOperationId: "payses_1",
+        }),
+        amount: 100,
+        currency_code: "brl",
+        state,
+        reconcile_after: new Date(0),
+      })
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          results: [
+            storedPayment({
+              status: "approved",
+              captured: true,
+              metadata: {
+                ...storedPayment().metadata,
+                request_fingerprint: fingerprint,
+              },
+            }),
+          ],
+        })
+      )
+      const service = new MercadoPagoCardProviderService(container, options)
+
+      await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
+        "this exact attempt is being reconciled"
+      )
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/refunds"))
+      ).toBe(false)
+    }
+  )
+
+  test("propagates a genuine attempt database read error", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ results: [] }))
+    const container = serviceContainer()
+    container.mercadoPagoAttempt.retrieveMercadoPagoAttempt.mockRejectedValueOnce(
+      new Error("database unavailable")
+    )
+    const service = new MercadoPagoCardProviderService(container, options)
+
+    await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
+      "database unavailable"
+    )
+    expect(
+      container.mercadoPagoAttempt.createMercadoPagoAttempts
+    ).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("checks idempotency ownership after a concurrent attempt insert", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ results: [] }))
+    const container = serviceContainer()
+    const notFound = Object.assign(new Error("not found"), {
+      type: "not_found",
+    })
+    container.mercadoPagoAttempt.retrieveMercadoPagoAttempt
+      .mockRejectedValueOnce(notFound)
+      .mockResolvedValueOnce({
+        payment_session_id: "payses_1",
+        payment_collection_id: "paycol_cart_1",
+        provider_kind: "card",
+        request_fingerprint: createPaymentFingerprint({
+          amount: 100,
+          currencyCode: "BRL",
+          providerKind: "card",
+          paymentMethodId: "visa",
+          token: "card-token-1",
+          installments: 1,
+        }),
+        idempotency_key: "foreign-idempotency-key",
+      })
+    container.mercadoPagoAttempt.createMercadoPagoAttempts.mockRejectedValueOnce(
+      Object.assign(new Error("duplicate"), { code: "23505" })
+    )
+    const service = new MercadoPagoCardProviderService(container, options)
+
+    await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
+      "attempt ownership mismatch"
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   test("does not recover a canceled payment with the same fingerprint from another session", async () => {
     const fingerprint = createPaymentFingerprint({
       amount: 100,
@@ -523,7 +755,7 @@ describe("Mercado Pago provider service", () => {
     expect(fetchMock.mock.calls[1][1]?.method).toBe("POST")
   })
 
-  test("does not reconcile a terminal payment owned by the current session", async () => {
+  test("does not adopt a terminal payment owned by the current session", async () => {
     const fingerprint = createPaymentFingerprint({
       amount: 100,
       currencyCode: "BRL",
@@ -532,29 +764,34 @@ describe("Mercado Pago provider service", () => {
       token: "card-token-1",
       installments: 1,
     })
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({
-        results: [
-          storedPayment({
-            status: "cancelled",
-            metadata: {
-              ...storedPayment().metadata,
-              request_fingerprint: fingerprint,
-            },
-          }),
-        ],
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          results: [
+            storedPayment({
+              status: "cancelled",
+              metadata: {
+                ...storedPayment().metadata,
+                request_fingerprint: fingerprint,
+              },
+            }),
+          ],
+        })
+      )
+      .mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as MercadoPagoCreatePayment
+        return jsonResponse(paymentFromCreate(body, { id: 67892 }))
       })
-    )
 
     const service = new MercadoPagoCardProviderService(
       serviceContainer(),
       options
     )
 
-    await expect(service.initiatePayment(initiateInput())).rejects.toThrow(
-      "terminal Mercado Pago payment"
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await expect(service.initiatePayment(initiateInput())).resolves.toMatchObject({
+      id: "67892",
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   test("keeps the creation key stable when retrying the same payment session", async () => {
@@ -587,7 +824,7 @@ describe("Mercado Pago provider service", () => {
       status: "rejected",
       metadata: {
         ...storedPayment().metadata,
-        payment_session_id: "payses_rejected",
+        payment_session_id: "payses_1",
         request_fingerprint: "old-card-fingerprint",
       },
     })
@@ -781,7 +1018,7 @@ describe("Mercado Pago provider service", () => {
     ).toBe(false)
   })
 
-  test("does not compensate the winner when concurrent attempts race", async () => {
+  test("does not compensate the winner when unrelated concurrent attempts race", async () => {
     let searchCount = 0
     let releaseSearches!: () => void
     const searchesStarted = new Promise<void>((resolve) => {
@@ -822,9 +1059,7 @@ describe("Mercado Pago provider service", () => {
       ),
     ])
 
-    expect(
-      outcomes.filter(({ status }) => status === "fulfilled")
-    ).toHaveLength(1)
+    expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1)
     expect(
       outcomes.filter(({ status }) => status === "rejected")
     ).toHaveLength(1)
@@ -836,9 +1071,9 @@ describe("Mercado Pago provider service", () => {
           ) as PromiseRejectedResult
         ).reason
       )
-    ).toContain("earlier attempt is being reconciled")
-    expect(creationKeys).toHaveLength(1)
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    ).toContain("session ownership mismatch")
+    expect(creationKeys).toHaveLength(2)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
     expect(
       fetchMock.mock.calls.some(
         ([url, init]) =>

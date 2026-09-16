@@ -19,7 +19,20 @@ const RETRYABLE_STATUS_CODES = new Set([
 const PAYMENT_SEARCH_PAGE_SIZE = 50
 const PAYMENT_SEARCH_MAX_OFFSET = 10_000
 
-class NonRetryableRequestError extends Error {}
+export class MercadoPagoDefinitiveRequestError extends Error {
+  readonly statusCode: number
+
+  constructor(statusCode: number) {
+    super(`Mercado Pago request failed with HTTP ${statusCode}`)
+    this.name = "MercadoPagoDefinitiveRequestError"
+    this.statusCode = statusCode
+  }
+}
+
+export const isMercadoPagoDefinitiveRequestError = (
+  error: unknown
+): error is MercadoPagoDefinitiveRequestError =>
+  error instanceof MercadoPagoDefinitiveRequestError
 
 const wait = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
@@ -194,20 +207,18 @@ export class MercadoPagoClient {
         })
 
         if (!response.ok) {
-          const error = new Error(
-            `Mercado Pago request failed with HTTP ${response.status}`
-          )
-
           if (!RETRYABLE_STATUS_CODES.has(response.status)) {
-            throw new NonRetryableRequestError(error.message)
+            throw new MercadoPagoDefinitiveRequestError(response.status)
           }
 
-          lastError = error
+          lastError = new Error(
+            `Mercado Pago request failed with HTTP ${response.status}`
+          )
         } else {
           return (await response.json()) as T
         }
       } catch (error) {
-        if (error instanceof NonRetryableRequestError) {
+        if (isMercadoPagoDefinitiveRequestError(error)) {
           throw error
         }
 

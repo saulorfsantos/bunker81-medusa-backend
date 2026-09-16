@@ -3,6 +3,10 @@ import type { MercadoPagoProviderKind } from "./types"
 
 export const MERCADO_PAGO_ORPHAN_GRACE_PERIOD_MS = 10 * 60 * 1000
 export const MERCADO_PAGO_ORPHAN_SEARCH_WINDOW_MS = 24 * 60 * 60 * 1000
+export const MERCADO_PAGO_RECONCILIATION_BATCH_SIZE = 100
+export const MERCADO_PAGO_RECONCILIATION_MAX_BATCHES = 3
+export const MERCADO_PAGO_RECONCILIATION_BASE_BACKOFF_MS = 5 * 60 * 1000
+export const MERCADO_PAGO_RECONCILIATION_MAX_BACKOFF_MS = 4 * 60 * 60 * 1000
 
 export const AUTO_COMPENSABLE_ORPHAN_STATUSES = new Set([
   "in_mediation",
@@ -30,6 +34,7 @@ export type MercadoPagoAttemptState =
   | "compensated"
   | "resolved_terminal"
   | "manual_review"
+  | "reviewed"
 
 export type StoredMercadoPagoAttempt = {
   id: string
@@ -51,8 +56,48 @@ export type StoredMercadoPagoAttempt = {
   bound_at?: Date | string | null
   compensated_at?: Date | string | null
   manual_review_at?: Date | string | null
+  reviewed_at?: Date | string | null
+  reviewed_by?: string | null
+  review_note?: string | null
   created_at?: Date | string
   updated_at?: Date | string
+}
+
+export const isNotFoundError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") {
+    return false
+  }
+
+  const candidate = error as {
+    type?: unknown
+    code?: unknown
+    status?: unknown
+    statusCode?: unknown
+  }
+  return (
+    candidate.type === "not_found" ||
+    candidate.code === "not_found" ||
+    candidate.status === 404 ||
+    candidate.statusCode === 404
+  )
+}
+
+export const nextReconciliationAfter = (input: {
+  now: number
+  createdAt: Date | string | undefined
+  reconciliationAttempts: number | undefined
+}): Date => {
+  const attempts = Math.max(0, input.reconciliationAttempts || 0)
+  const delay = Math.min(
+    MERCADO_PAGO_RECONCILIATION_BASE_BACKOFF_MS * 2 ** attempts,
+    MERCADO_PAGO_RECONCILIATION_MAX_BACKOFF_MS
+  )
+  const createdAt = Date.parse(String(input.createdAt || ""))
+  const searchDeadline = Number.isFinite(createdAt)
+    ? createdAt + MERCADO_PAGO_ORPHAN_SEARCH_WINDOW_MS
+    : input.now + MERCADO_PAGO_RECONCILIATION_BASE_BACKOFF_MS
+
+  return new Date(Math.min(input.now + delay, searchDeadline))
 }
 
 export type MercadoPagoAttemptStore = {

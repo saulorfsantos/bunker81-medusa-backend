@@ -12,7 +12,10 @@ import { MERCADO_PAGO_ATTEMPT_MODULE } from "../modules/mercado-pago-attempt"
 import {
   AUTO_COMPENSABLE_ORPHAN_STATUSES,
   MERCADO_PAGO_ORPHAN_SEARCH_WINDOW_MS,
+  MERCADO_PAGO_RECONCILIATION_BATCH_SIZE,
+  MERCADO_PAGO_RECONCILIATION_MAX_BATCHES,
   TERMINAL_ORPHAN_STATUSES,
+  nextReconciliationAfter,
   structuredOrphanEvent,
   type MercadoPagoAttemptStore,
   type StoredMercadoPagoAttempt,
@@ -42,6 +45,17 @@ const toRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object"
     ? (value as Record<string, unknown>)
     : {}
+
+const searchWindowExpired = (
+  attempt: StoredMercadoPagoAttempt,
+  now: number
+): boolean => {
+  const createdAt = Date.parse(String(attempt.created_at || ""))
+  return (
+    !Number.isFinite(createdAt) ||
+    createdAt <= now - MERCADO_PAGO_ORPHAN_SEARCH_WINDOW_MS
+  )
+}
 
 const ownsAttempt = (
   payment: MercadoPagoPayment,
@@ -150,232 +164,290 @@ export async function reconcileMercadoPagoOrphanAttempts(
     Modules.PAYMENT
   )
   const now = runtime.now ?? Date.now()
-  const allAttempts: StoredMercadoPagoAttempt[] = []
-  const batchSize = 100
-
-  for (let skip = 0; ; skip += batchSize) {
-    const batch = await attemptStore.listMercadoPagoAttempts(
-      {},
-      { take: batchSize, skip, order: { created_at: "ASC" } }
-    )
-    allAttempts.push(...batch)
-    if (batch.length < batchSize) {
-      break
-    }
-  }
-
-  const dueAttempts = allAttempts.filter((attempt) => {
-    if (!["creating", "remote_found"].includes(attempt.state)) {
-      return false
-    }
-    const reconcileAfter = Date.parse(String(attempt.reconcile_after))
-    return Number.isFinite(reconcileAfter) && reconcileAfter <= now
-  })
+  let checked = 0
   let compensated = 0
   let recovered = 0
   let manualReview = 0
   let notFound = 0
   let failed = 0
 
-  for (const attempt of dueAttempts) {
-    try {
-      const payments = await runtime.client.searchPayments(
-        attempt.payment_collection_id
-      )
-      const ownedPayments = payments.filter((payment) =>
-        ownsAttempt(payment, attempt)
-      )
+  for (
+    let batchNumber = 0;
+    batchNumber < MERCADO_PAGO_RECONCILIATION_MAX_BATCHES;
+    batchNumber++
+  ) {
+    const dueAttempts = await attemptStore.listMercadoPagoAttempts(
+      {
+        state: ["creating", "remote_found"],
+        reconcile_after: { $lte: new Date(now) },
+      },
+      {
+        take: MERCADO_PAGO_RECONCILIATION_BATCH_SIZE,
+        skip: 0,
+        order: {
+          reconcile_after: "ASC",
+          created_at: "ASC",
+          payment_session_id: "ASC",
+        },
+      }
+    )
 
-      if (!ownedPayments.length) {
-        notFound++
-        const createdAt = Date.parse(String(attempt.created_at || ""))
-        const searchWindowExpired =
-          Number.isFinite(createdAt) &&
-          createdAt <= now - MERCADO_PAGO_ORPHAN_SEARCH_WINDOW_MS
-        await attemptStore.updateMercadoPagoAttempts({
-          id: attempt.id,
-          state: searchWindowExpired ? "manual_review" : attempt.state,
-          reconciliation_attempts: (attempt.reconciliation_attempts || 0) + 1,
-          last_reconciled_at: new Date(now),
-          last_error_code: searchWindowExpired
-            ? "remote_not_found_after_search_window"
-            : "remote_not_yet_indexed",
-          ...(searchWindowExpired
-            ? { manual_review_at: new Date(now) }
-            : {}),
-        })
-        if (searchWindowExpired) {
+    if (!dueAttempts.length) {
+      break
+    }
+
+    for (const attempt of dueAttempts) {
+      checked++
+      try {
+        const payments = await runtime.client.searchPayments(
+          attempt.payment_collection_id
+        )
+        const ownedPayments = payments.filter((payment) =>
+          ownsAttempt(payment, attempt)
+        )
+
+        if (!ownedPayments.length) {
+          notFound++
+          const expired = searchWindowExpired(attempt, now)
+          await attemptStore.updateMercadoPagoAttempts({
+            id: attempt.id,
+            state: expired ? "manual_review" : attempt.state,
+            reconciliation_attempts: (attempt.reconciliation_attempts || 0) + 1,
+            last_reconciled_at: new Date(now),
+            last_error_code: expired
+              ? "remote_not_found_after_search_window"
+              : "remote_not_yet_indexed",
+            reconcile_after: expired
+              ? attempt.reconcile_after
+              : nextReconciliationAfter({
+                  now,
+                  createdAt: attempt.created_at,
+                  reconciliationAttempts: attempt.reconciliation_attempts,
+                }),
+            ...(expired ? { three_ds_info: null } : {}),
+            ...(expired ? { manual_review_at: new Date(now) } : {}),
+          })
+          if (expired) {
+            manualReview++
+            logger.error(
+              structuredOrphanEvent("mercado_pago_orphan_manual_review", {
+                reason: "remote_not_found_after_search_window",
+                attempt_id: attempt.id,
+                payment_session_id: attempt.payment_session_id,
+                payment_collection_id: attempt.payment_collection_id,
+                provider_kind: attempt.provider_kind,
+              })
+            )
+          }
+          continue
+        }
+
+        if (ownedPayments.length !== 1) {
+          await attemptStore.updateMercadoPagoAttempts({
+            id: attempt.id,
+            state: "manual_review",
+            reconciliation_attempts: (attempt.reconciliation_attempts || 0) + 1,
+            last_reconciled_at: new Date(now),
+            manual_review_at: new Date(now),
+            last_error_code: "multiple_remote_payments_match_attempt",
+            three_ds_info: null,
+          })
           manualReview++
           logger.error(
             structuredOrphanEvent("mercado_pago_orphan_manual_review", {
-              reason: "remote_not_found_after_search_window",
+              reason: "multiple_remote_payments_match_attempt",
               attempt_id: attempt.id,
               payment_session_id: attempt.payment_session_id,
               payment_collection_id: attempt.payment_collection_id,
               provider_kind: attempt.provider_kind,
+              remote_match_count: ownedPayments.length,
             })
           )
+          continue
         }
-        continue
-      }
 
-      if (ownedPayments.length !== 1) {
+        const payment = ownedPayments[0]
+        const paymentId = String(payment.id)
         await attemptStore.updateMercadoPagoAttempts({
           id: attempt.id,
-          state: "manual_review",
+          state: "remote_found",
+          remote_payment_id: paymentId,
+          remote_status: payment.status,
           reconciliation_attempts: (attempt.reconciliation_attempts || 0) + 1,
           last_reconciled_at: new Date(now),
-          manual_review_at: new Date(now),
-          last_error_code: "multiple_remote_payments_match_attempt",
+          last_error_code: null,
         })
-        manualReview++
-        logger.error(
-          structuredOrphanEvent("mercado_pago_orphan_manual_review", {
-            reason: "multiple_remote_payments_match_attempt",
-            attempt_id: attempt.id,
-            payment_session_id: attempt.payment_session_id,
-            payment_collection_id: attempt.payment_collection_id,
-            provider_kind: attempt.provider_kind,
-            remote_match_count: ownedPayments.length,
-          })
+
+        const owningSession = await findLiveOwningSession(
+          paymentModule,
+          attempt,
+          paymentId
         )
-        continue
-      }
+        if (owningSession?.id === attempt.payment_session_id) {
+          await paymentModule.updatePaymentSession({
+            id: owningSession.id,
+            amount: owningSession.amount,
+            currency_code: owningSession.currency_code,
+            data: owningSession.data || {},
+          })
+          await attemptStore.updateMercadoPagoAttempts({
+            id: attempt.id,
+            state: "bound",
+            remote_payment_id: paymentId,
+            remote_status: payment.status,
+            bound_at: new Date(now),
+          })
+          recovered++
+          continue
+        }
 
-      const payment = ownedPayments[0]
-      const paymentId = String(payment.id)
-      await attemptStore.updateMercadoPagoAttempts({
-        id: attempt.id,
-        state: "remote_found",
-        remote_payment_id: paymentId,
-        remote_status: payment.status,
-        reconciliation_attempts: (attempt.reconciliation_attempts || 0) + 1,
-        last_reconciled_at: new Date(now),
-        last_error_code: null,
-      })
+        if (owningSession) {
+          await attemptStore.updateMercadoPagoAttempts({
+            id: attempt.id,
+            state: "manual_review",
+            remote_payment_id: paymentId,
+            remote_status: payment.status,
+            manual_review_at: new Date(now),
+            last_error_code: "remote_payment_bound_to_different_live_session",
+            three_ds_info: null,
+          })
+          manualReview++
+          logger.error(
+            structuredOrphanEvent("mercado_pago_orphan_manual_review", {
+              reason: "remote_payment_bound_to_different_live_session",
+              attempt_id: attempt.id,
+              payment_session_id: attempt.payment_session_id,
+              payment_collection_id: attempt.payment_collection_id,
+              provider_kind: attempt.provider_kind,
+              remote_payment_id: paymentId,
+              remote_status: payment.status,
+              owning_payment_session_id: owningSession.id,
+            })
+          )
+          continue
+        }
 
-      const owningSession = await findLiveOwningSession(
-        paymentModule,
-        attempt,
-        paymentId
-      )
-      if (owningSession?.id === attempt.payment_session_id) {
-        await paymentModule.updatePaymentSession({
-          id: owningSession.id,
-          amount: owningSession.amount,
-          currency_code: owningSession.currency_code,
-          data: owningSession.data || {},
-        })
-        await attemptStore.updateMercadoPagoAttempts({
-          id: attempt.id,
-          state: "bound",
-          remote_payment_id: paymentId,
-          remote_status: payment.status,
-          bound_at: new Date(now),
-        })
-        recovered++
-        continue
-      }
+        if (TERMINAL_ORPHAN_STATUSES.has(payment.status)) {
+          await attemptStore.updateMercadoPagoAttempts({
+            id: attempt.id,
+            state: "resolved_terminal",
+            remote_payment_id: paymentId,
+            remote_status: payment.status,
+            three_ds_info: null,
+          })
+          continue
+        }
 
-      if (owningSession) {
+        if (AUTO_COMPENSABLE_ORPHAN_STATUSES.has(payment.status)) {
+          await runtime.client.validateEnvironment(runtime.liveMode)
+          const canceled = await runtime.client.cancelPayment(
+            paymentId,
+            createIdempotencyKey({
+              stableReference: attempt.payment_collection_id,
+              operation: "compensate",
+              providerKind: attempt.provider_kind,
+              requestFingerprint: attempt.request_fingerprint,
+              medusaOperationId: `orphan-${attempt.id}`,
+            })
+          )
+          if (!ownsAttempt(canceled, attempt) || canceled.status !== "cancelled") {
+            throw new Error("orphan cancellation was not confirmed")
+          }
+          await attemptStore.updateMercadoPagoAttempts({
+            id: attempt.id,
+            state: "compensated",
+            remote_payment_id: paymentId,
+            remote_status: canceled.status,
+            compensated_at: new Date(now),
+            last_error_code: null,
+            three_ds_info: null,
+          })
+          compensated++
+          continue
+        }
+
         await attemptStore.updateMercadoPagoAttempts({
           id: attempt.id,
           state: "manual_review",
           remote_payment_id: paymentId,
           remote_status: payment.status,
           manual_review_at: new Date(now),
-          last_error_code: "remote_payment_bound_to_different_live_session",
+          last_error_code: "remote_status_not_auto_compensable",
+          three_ds_info: null,
         })
         manualReview++
         logger.error(
           structuredOrphanEvent("mercado_pago_orphan_manual_review", {
-            reason: "remote_payment_bound_to_different_live_session",
+            reason: "remote_status_not_auto_compensable",
             attempt_id: attempt.id,
             payment_session_id: attempt.payment_session_id,
             payment_collection_id: attempt.payment_collection_id,
             provider_kind: attempt.provider_kind,
             remote_payment_id: paymentId,
             remote_status: payment.status,
-            owning_payment_session_id: owningSession.id,
           })
         )
-        continue
-      }
-
-      if (TERMINAL_ORPHAN_STATUSES.has(payment.status)) {
-        await attemptStore.updateMercadoPagoAttempts({
-          id: attempt.id,
-          state: "resolved_terminal",
-          remote_payment_id: paymentId,
-          remote_status: payment.status,
-        })
-        continue
-      }
-
-      if (AUTO_COMPENSABLE_ORPHAN_STATUSES.has(payment.status)) {
-        await runtime.client.validateEnvironment(runtime.liveMode)
-        const canceled = await runtime.client.cancelPayment(
-          paymentId,
-          createIdempotencyKey({
-            stableReference: attempt.payment_collection_id,
-            operation: "compensate",
-            providerKind: attempt.provider_kind,
-            requestFingerprint: attempt.request_fingerprint,
-            medusaOperationId: `orphan-${attempt.id}`,
+      } catch (error) {
+        failed++
+        const expired = searchWindowExpired(attempt, now)
+        try {
+          await attemptStore.updateMercadoPagoAttempts({
+            id: attempt.id,
+            ...(expired
+              ? {
+                  state: "manual_review",
+                  manual_review_at: new Date(now),
+                  three_ds_info: null,
+                }
+              : {}),
+            reconciliation_attempts: (attempt.reconciliation_attempts || 0) + 1,
+            last_reconciled_at: new Date(now),
+            reconcile_after: expired
+              ? attempt.reconcile_after
+              : nextReconciliationAfter({
+                  now,
+                  createdAt: attempt.created_at,
+                  reconciliationAttempts: attempt.reconciliation_attempts,
+                }),
+            last_error_code: expired
+              ? "reconciliation_failed_after_search_window"
+              : "reconciliation_failed",
           })
-        )
-        if (!ownsAttempt(canceled, attempt) || canceled.status !== "cancelled") {
-          throw new Error("orphan cancellation was not confirmed")
+          if (expired) {
+            manualReview++
+          }
+        } catch (updateError) {
+          logger.error(
+            structuredOrphanEvent("mercado_pago_orphan_backoff_update_failed", {
+              attempt_id: attempt.id,
+              payment_session_id: attempt.payment_session_id,
+              reason:
+                updateError instanceof Error
+                  ? updateError.message
+                  : "unknown_error",
+            })
+          )
         }
-        await attemptStore.updateMercadoPagoAttempts({
-          id: attempt.id,
-          state: "compensated",
-          remote_payment_id: paymentId,
-          remote_status: canceled.status,
-          compensated_at: new Date(now),
-          last_error_code: null,
-        })
-        compensated++
-        continue
+        logger.error(
+          structuredOrphanEvent("mercado_pago_orphan_reconciliation_failed", {
+            attempt_id: attempt.id,
+            payment_session_id: attempt.payment_session_id,
+            payment_collection_id: attempt.payment_collection_id,
+            provider_kind: attempt.provider_kind,
+            reason: error instanceof Error ? error.message : "unknown_error",
+          })
+        )
       }
+    }
 
-      await attemptStore.updateMercadoPagoAttempts({
-        id: attempt.id,
-        state: "manual_review",
-        remote_payment_id: paymentId,
-        remote_status: payment.status,
-        manual_review_at: new Date(now),
-        last_error_code: "remote_status_not_auto_compensable",
-      })
-      manualReview++
-      logger.error(
-        structuredOrphanEvent("mercado_pago_orphan_manual_review", {
-          reason: "remote_status_not_auto_compensable",
-          attempt_id: attempt.id,
-          payment_session_id: attempt.payment_session_id,
-          payment_collection_id: attempt.payment_collection_id,
-          provider_kind: attempt.provider_kind,
-          remote_payment_id: paymentId,
-          remote_status: payment.status,
-        })
-      )
-    } catch (error) {
-      failed++
-      logger.error(
-        structuredOrphanEvent("mercado_pago_orphan_reconciliation_failed", {
-          attempt_id: attempt.id,
-          payment_session_id: attempt.payment_session_id,
-          payment_collection_id: attempt.payment_collection_id,
-          provider_kind: attempt.provider_kind,
-          reason: error instanceof Error ? error.message : "unknown_error",
-        })
-      )
+    if (dueAttempts.length < MERCADO_PAGO_RECONCILIATION_BATCH_SIZE) {
+      break
     }
   }
 
   logger.info(
     structuredOrphanEvent("mercado_pago_orphan_reconciliation_completed", {
-      checked: dueAttempts.length,
+      checked,
       recovered,
       compensated,
       manual_review: manualReview,

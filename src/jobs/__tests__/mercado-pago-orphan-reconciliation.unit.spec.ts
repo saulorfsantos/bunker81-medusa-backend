@@ -56,8 +56,46 @@ const setup = (
 ) => {
   const attempts = new Map(initialAttempts.map((attempt) => [attempt.id, attempt]))
   const attemptStore = {
-    listMercadoPagoAttempts: jest.fn().mockImplementation(async () =>
-      Array.from(attempts.values())
+    listMercadoPagoAttempts: jest.fn().mockImplementation(
+      async (
+        filters: Record<string, unknown> = {},
+        config: Record<string, unknown> = {}
+      ) => {
+        const states = Array.isArray(filters.state)
+          ? filters.state
+          : filters.state
+            ? [filters.state]
+            : undefined
+        const due = (
+          filters.reconcile_after as { $lte?: Date } | undefined
+        )?.$lte
+        const ordered = Array.from(attempts.values())
+          .filter((attempt) => !states || states.includes(attempt.state))
+          .filter(
+            (attempt) =>
+              !due || Date.parse(String(attempt.reconcile_after)) <= due.getTime()
+          )
+          .sort((left, right) => {
+            const reconcileDifference =
+              Date.parse(String(left.reconcile_after)) -
+              Date.parse(String(right.reconcile_after))
+            const createdDifference =
+              Date.parse(String(left.created_at)) -
+              Date.parse(String(right.created_at))
+            return (
+              reconcileDifference ||
+              createdDifference ||
+              (left.payment_session_id < right.payment_session_id
+                ? -1
+                : left.payment_session_id > right.payment_session_id
+                  ? 1
+                  : 0)
+            )
+          })
+        const skip = Number(config.skip || 0)
+        const take = Number(config.take || ordered.length)
+        return ordered.slice(skip, skip + take)
+      }
     ),
     updateMercadoPagoAttempts: jest.fn().mockImplementation(async (data) => {
       const updated = { ...attempts.get(data.id), ...data }
@@ -140,6 +178,16 @@ describe("Mercado Pago orphan attempt reconciliation", () => {
       now: NOW,
     })
     expect(context.attempts.get(attempt.id)?.state).toBe("creating")
+    expect(
+      Date.parse(String(context.attempts.get(attempt.id)?.reconcile_after))
+    ).toBe(NOW + 5 * 60 * 1000)
+
+    await reconcileMercadoPagoOrphanAttempts(context.container as never, {
+      client,
+      liveMode: false,
+      now: NOW + 60 * 1000,
+    })
+    expect(client.searchPayments).toHaveBeenCalledTimes(1)
 
     await reconcileMercadoPagoOrphanAttempts(context.container as never, {
       client,
@@ -152,6 +200,138 @@ describe("Mercado Pago orphan attempt reconciliation", () => {
       remote_payment_id: "mp_1",
     })
     expect(client.cancelPayment).not.toHaveBeenCalled()
+  })
+
+  test("does not adopt or compensate a foreign-session remote payment", async () => {
+    const attempt = attemptFixture()
+    const foreign = paymentFixture(attempt, {
+      metadata: {
+        payment_session_id: "payses_foreign",
+        payment_collection_id: attempt.payment_collection_id,
+        provider_kind: attempt.provider_kind,
+        request_fingerprint: attempt.request_fingerprint,
+      },
+    })
+    const context = setup([attempt])
+    const client = {
+      searchPayments: jest.fn().mockResolvedValue([foreign]),
+      cancelPayment: jest.fn(),
+      validateEnvironment: jest.fn(),
+    }
+
+    await reconcileMercadoPagoOrphanAttempts(context.container as never, {
+      client,
+      liveMode: false,
+      now: NOW,
+    })
+
+    expect(context.paymentModule.updatePaymentSession).not.toHaveBeenCalled()
+    expect(client.cancelPayment).not.toHaveBeenCalled()
+    expect(context.attempts.get(attempt.id)).toMatchObject({
+      state: "creating",
+      last_error_code: "remote_not_yet_indexed",
+    })
+  })
+
+  test("increases not-found backoff without sleeping", async () => {
+    const attempt = attemptFixture()
+    const context = setup([attempt])
+    const client = {
+      searchPayments: jest.fn().mockResolvedValue([]),
+      cancelPayment: jest.fn(),
+      validateEnvironment: jest.fn(),
+    }
+
+    for (const now of [NOW, NOW + 5 * 60 * 1000, NOW + 15 * 60 * 1000]) {
+      await reconcileMercadoPagoOrphanAttempts(context.container as never, {
+        client,
+        liveMode: false,
+        now,
+      })
+    }
+
+    expect(client.searchPayments).toHaveBeenCalledTimes(3)
+    expect(context.attempts.get(attempt.id)).toMatchObject({
+      reconciliation_attempts: 3,
+      state: "creating",
+    })
+    expect(
+      Date.parse(String(context.attempts.get(attempt.id)?.reconcile_after))
+    ).toBe(NOW + 35 * 60 * 1000)
+  })
+
+  test("filters due states in the database and never loads terminal rows", async () => {
+    const relevant = Array.from({ length: 7 }, (_, index) =>
+      attemptFixture({
+        id: `mpatt_due_${index}`,
+        payment_session_id: `payses_due_${String(index).padStart(3, "0")}`,
+      })
+    )
+    const terminal = Array.from({ length: 253 }, (_, index) =>
+      attemptFixture({
+        id: `mpatt_terminal_${index}`,
+        payment_session_id: `payses_terminal_${index}`,
+        state: index % 2 ? "bound" : "resolved_terminal",
+      })
+    )
+    const context = setup([...terminal, ...relevant])
+    const client = {
+      searchPayments: jest.fn().mockResolvedValue([]),
+      cancelPayment: jest.fn(),
+      validateEnvironment: jest.fn(),
+    }
+
+    await reconcileMercadoPagoOrphanAttempts(context.container as never, {
+      client,
+      liveMode: false,
+      now: NOW,
+    })
+
+    expect(client.searchPayments).toHaveBeenCalledTimes(7)
+    expect(context.attemptStore.listMercadoPagoAttempts).toHaveBeenCalledTimes(1)
+    expect(
+      context.attemptStore.listMercadoPagoAttempts.mock.calls[0][0]
+    ).toEqual({
+      state: ["creating", "remote_found"],
+      reconcile_after: { $lte: new Date(NOW) },
+    })
+    expect(
+      context.attemptStore.listMercadoPagoAttempts.mock.calls[0][1]
+    ).toMatchObject({ take: 100, skip: 0 })
+    expect(
+      terminal.every(
+        ({ id }) => context.attempts.get(id)?.last_reconciled_at === undefined
+      )
+    ).toBe(true)
+  })
+
+  test("bounds one job run to three batches without retaining all rows", async () => {
+    const due = Array.from({ length: 351 }, (_, index) =>
+      attemptFixture({
+        id: `mpatt_batch_${index}`,
+        payment_session_id: `payses_batch_${String(index).padStart(3, "0")}`,
+      })
+    )
+    const context = setup(due)
+    const client = {
+      searchPayments: jest.fn().mockResolvedValue([]),
+      cancelPayment: jest.fn(),
+      validateEnvironment: jest.fn(),
+    }
+
+    await reconcileMercadoPagoOrphanAttempts(context.container as never, {
+      client,
+      liveMode: false,
+      now: NOW,
+    })
+
+    expect(context.attemptStore.listMercadoPagoAttempts).toHaveBeenCalledTimes(3)
+    expect(client.searchPayments).toHaveBeenCalledTimes(300)
+    expect(
+      Array.from(context.attempts.values()).filter(
+        (candidate) => candidate.last_reconciled_at
+      )
+    ).toHaveLength(300)
   })
 
   test.each([
@@ -186,6 +366,45 @@ describe("Mercado Pago orphan attempt reconciliation", () => {
       expect(context.attempts.get(attempt.id)?.state).toBe("compensated")
     }
   )
+
+  test("uses the same compensation key across concurrent job executions", async () => {
+    const attempt = attemptFixture()
+    const payment = paymentFixture(attempt)
+    const context = setup([attempt])
+    let releaseCancellation!: () => void
+    const cancellationMayFinish = new Promise<void>((resolve) => {
+      releaseCancellation = resolve
+    })
+    let cancellationCount = 0
+    const cancelPayment = jest.fn().mockImplementation(async () => {
+      cancellationCount++
+      if (cancellationCount === 2) releaseCancellation()
+      await cancellationMayFinish
+      return { ...payment, status: "cancelled" }
+    })
+    const client = {
+      searchPayments: jest.fn().mockResolvedValue([payment]),
+      cancelPayment,
+      validateEnvironment: jest.fn().mockResolvedValue(undefined),
+    }
+
+    await Promise.all([
+      reconcileMercadoPagoOrphanAttempts(context.container as never, {
+        client,
+        liveMode: false,
+        now: NOW,
+      }),
+      reconcileMercadoPagoOrphanAttempts(context.container as never, {
+        client,
+        liveMode: false,
+        now: NOW,
+      }),
+    ])
+
+    expect(cancelPayment).toHaveBeenCalledTimes(2)
+    expect(cancelPayment.mock.calls[0][1]).toBe(cancelPayment.mock.calls[1][1])
+    expect(context.attempts.get(attempt.id)?.state).toBe("compensated")
+  })
 
   test("never cancels an orphan candidate bound to a different live session", async () => {
     const attempt = attemptFixture()

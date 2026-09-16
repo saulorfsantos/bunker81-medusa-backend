@@ -104,12 +104,11 @@ well as compensating the remote charge.
 
 - Before creation, the provider searches Mercado Pago by the stable Medusa
   payment-collection reference and reconciles a pre-existing attempt.
-- The first active payment attempt uses one deterministic creation key scoped
-  to payment collection and operation, even across payment methods. After a
-  terminal failure, a new attempt adds its amount/method fingerprint. A lost
-  response, concurrent initialization, or session recreation therefore does
-  not create a second active payment for the cart, while a genuinely rejected
-  card can be retried.
+- Every attempt uses one deterministic creation key scoped to the authoritative
+  session, provider, and request fingerprint. Retries of that exact attempt
+  reuse its key; a new card token, payment method, or Medusa session creates a
+  separately owned attempt. An unresolved attempt never blocks an unrelated
+  attempt for the same collection.
 - Amount or method changes while an active remote payment exists are refused.
   A rejected/terminal attempt may be retried with a new card token and therefore
   a new fingerprint.
@@ -132,8 +131,17 @@ If create may have succeeded but both its response and the immediate search are
 empty, the provider leaves the durable attempt in `creating` and fails the
 request. A five-minute Medusa job searches due attempts after a **10-minute
 grace period**, long enough for delayed Mercado Pago search indexing without
-blocking the request or polling indefinitely. Search stops after 24 hours and
-raises structured manual-review observability.
+blocking Pix fallback or a new-token card retry. A definitive non-retryable HTTP
+create rejection immediately moves the attempt to `resolved_terminal`; only
+ambiguous transport/retryable failures become orphan candidates.
+
+The job asks the database only for `creating`/`remote_found` attempts whose
+`reconcile_after` is due. It handles at most three batches of 100 rows per run
+and does not retain prior batches. Empty searches advance `reconcile_after`
+with bounded exponential delays of 5, 10, 20, 40, 80, 160, then at most 240
+minutes, capped at the attempt's 24-hour search deadline. There are no sleeps;
+the scheduled job performs the later query. At the deadline the attempt moves
+to `manual_review`, so polling cannot continue indefinitely.
 
 When the original session is still live, the job drives the normal Payment
 Module update so the strictly matching remote payment is bound to that session.
@@ -144,6 +152,23 @@ states are never canceled or refunded automatically; they produce a sanitized
 `mercado_pago_orphan_manual_review` JSON log containing only local/remote IDs,
 provider, collection, status, and reason. Operations must reconcile those cases
 against the Medusa order/payment state before acting.
+
+### Manual-review operator command
+
+This is an internal Medusa exec command, not a Store API endpoint. It only
+changes the local attempt record and never calls Mercado Pago or changes a
+remote payment:
+
+```sh
+npm run mp:manual-review -- list
+npm run mp:manual-review -- resolve --attempt-id mpatt_... --reviewed-by operator-id --note "ledger checked"
+```
+
+`resolve` requires the exact attempt ID and operator identity, is idempotent,
+and moves only `manual_review` to `reviewed`. The audit fields `reviewed_at`,
+`reviewed_by`, and `review_note` plus a structured log record the action. Lists
+and logs omit 3DS continuation data. An old `manual_review`/`reviewed` attempt
+does not block a different session, provider, or request fingerprint.
 
 A late orphan webhook is matched to the durable attempt using the complete
 ownership tuple and recorded for the job, but returns `NOT_SUPPORTED` to the
@@ -159,6 +184,8 @@ for the same session, provider, fingerprint, and remote payment. The latter
 supports later GET/search responses that omit or return null challenge fields.
 Missing continuation for `pending_challenge` is a controlled contract error,
 and challenge URLs must remain credential-free HTTPS URLs.
+Persisted continuation data is cleared when an attempt becomes terminal,
+compensated, or operator-reviewed; pending-challenge recovery remains intact.
 
 ## Deferred after-sale scope (M6/M7)
 

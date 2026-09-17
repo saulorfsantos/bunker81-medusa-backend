@@ -100,6 +100,7 @@ module.exports = defineConfig({
       ? [
           {
             resolve: "@medusajs/medusa/payment",
+            dependencies: ["mercadoPagoAttempt"],
             options: {
               providers: [
                 {

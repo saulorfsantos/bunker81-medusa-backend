@@ -16,7 +16,8 @@ The following environment-variable names are consumed by `medusa-config.ts`:
 
 - `MERCADO_PAGO_ACCESS_TOKEN` (protected secret)
 - `MERCADO_PAGO_WEBHOOK_SECRET` (protected secret)
-- `MERCADO_PAGO_WEBHOOK_BASE_URL` (public HTTPS backend origin)
+- `MERCADO_PAGO_WEBHOOK_BASE_URL` (public HTTPS backend origin), or
+  `MEDUSA_BACKEND_URL` as its explicit fallback
 - `MERCADO_PAGO_LIVE_MODE` (`true` or `false`; required explicitly)
 
 Do not commit values for protected variables. The provider checks that the
@@ -25,6 +26,34 @@ remote payment's `live_mode` matches the configured mode before changing a
 Medusa payment state. A `TEST-` credential is rejected in live mode. For
 `APP_USR-` credentials, `/users/me` is consulted so Mercado Pago test users
 (tagged/named as test users) are also distinguished before any charge.
+
+## Required production migration and existing-region backfill
+
+The provider must not be enabled in a running application until both the custom
+module migrations and the existing-region backfill have completed. With the
+application stopped, run these commands from the exact release artifact in a
+controlled one-shot process that has the final Mercado Pago configuration:
+
+```sh
+npm run db:migrate
+npm run mp:backfill-region
+```
+
+`db:migrate` creates/upgrades `mercado_pago_attempt`, which is required before
+the provider can persist a remote-create attempt. `mp:backfill-region` does not
+create a region. It requires exactly one existing region whose currency is BRL
+and whose countries include `br`; zero or multiple matches abort without a
+mutation. It preserves every current payment-provider link and adds:
+
+- `pp_mercadopago-pix_mercadopago`
+- `pp_mercadopago-card_mercadopago`
+
+The backfill is idempotent: once both links exist, another execution makes no
+change. The provider module must be registered in the one-shot process so the
+Medusa workflow can validate both provider IDs. Only after both commands
+succeed should the application be started with the provider enabled. Do not
+use the initial seed to update an existing production region, and do not run
+either command against production as part of local validation or review.
 
 ## Payment-session input
 

@@ -1,6 +1,9 @@
 import { loadEnv, defineConfig } from '@medusajs/framework/utils'
+import { readMelhorEnvioConfig } from './src/modules/melhor-envio/config'
+import { fulfillmentProviders } from './src/modules/melhor-envio/providers'
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
+const melhorEnvioConfig = readMelhorEnvioConfig(process.env)
 
 const mercadoPagoAccessToken = process.env.MERCADO_PAGO_ACCESS_TOKEN
 const mercadoPagoWebhookSecret = process.env.MERCADO_PAGO_WEBHOOK_SECRET
@@ -51,6 +54,14 @@ module.exports = defineConfig({
     disable: process.env.MEDUSA_DISABLE_ADMIN === "true",
   },
   modules: [
+    ...(melhorEnvioConfig
+      ? [{
+          resolve: "@medusajs/medusa/fulfillment",
+          options: {
+            providers: fulfillmentProviders(melhorEnvioConfig),
+          },
+        }]
+      : []),
     {
       resolve: "./src/modules/mercado-pago-attempt",
     },

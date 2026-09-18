@@ -49,7 +49,24 @@ describe("Melhor Envio sandbox quote", () => {
       delivery_time: 7, currency: "brl", quote_metadata: metadata,
     }])
     expect(normalizeQuotes([{ ...response[0], custom_price: null }], metadata)[0].price).toBe(18)
+    expect(normalizeQuotes([{ ...response[0], custom_price: null, price: "19.99" }], metadata)[0].price).toBe(19.99)
     expect(normalizeQuotes([{ ...response[0], custom_price: "invalid" }], metadata)).toEqual([])
+  })
+
+  it.each([
+    ["19.99", 19.99],
+    ["18.35", 18.35],
+    ["0.07", 0.07],
+    ["1.10", 1.10],
+  ])("preserves valid two-decimal custom price %s without scaling", (input, expected) => {
+    const metadata = { source: "products" as const, origin_postal_code: "50610545", destination_postal_code: "01001000" }
+    expect(normalizeQuotes([{ ...response[0], custom_price: input }], metadata)[0].price).toBe(expected)
+    expect(normalizeQuotes([{ ...response[0], custom_price: Number(input) }], metadata)[0].price).toBe(expected)
+  })
+
+  it.each([0, -1, NaN, Infinity, "1.001", 1.001, "1.100"])("rejects invalid monetary price %s", (input) => {
+    const metadata = { source: "products" as const, origin_postal_code: "50610545", destination_postal_code: "01001000" }
+    expect(normalizeQuotes([{ ...response[0], custom_price: input }], metadata)).toEqual([])
   })
 
   it("sends only the sandbox calculate request with required headers", async () => {

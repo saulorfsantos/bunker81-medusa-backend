@@ -57,8 +57,11 @@ export function buildQuotePayload(config: MelhorEnvioConfig, context: QuoteConte
 
 function price(value: unknown): number | undefined {
   if (typeof value !== "string" && typeof value !== "number") return undefined
+  if (typeof value === "string" && !/^\d+(?:\.\d{1,2})?$/.test(value)) return undefined
   const number = Number(value)
-  return Number.isFinite(number) && number > 0 && Math.round(number * 100) === number * 100 ? number : undefined
+  return Number.isFinite(number) && number > 0 && Math.abs(number * 100 - Math.round(number * 100)) < 1e-6
+    ? number
+    : undefined
 }
 
 export function normalizeQuotes(raw: unknown, metadata: Quote["quote_metadata"]): Quote[] {

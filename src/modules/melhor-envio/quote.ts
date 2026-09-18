@@ -15,7 +15,7 @@ export type Quote = {
   price: number
   delivery_time?: number
   currency: "brl"
-  quote_metadata: { source: "products" | "demo_volume"; origin_postal_code: string; destination_postal_code: string }
+  quote_metadata: { source: "products" | "demo_volume" | "production_preview_volume"; origin_postal_code: string; destination_postal_code: string }
 }
 
 function positive(value: unknown): value is number {
@@ -46,13 +46,17 @@ export function buildQuotePayload(config: MelhorEnvioConfig, context: QuoteConte
   if (products.every((product) => product !== null)) {
     return { payload: { ...base, products }, source: "products" as const }
   }
-  if (!config.demoVolume) throw new Error("Catalog dimensions, weight, unit settings or value are missing; demo fallback is disabled")
+  const volume = config.environment === "production" ? config.productionPreviewVolume : config.demoVolume
+  if (!volume) throw new Error("Catalog dimensions, weight, unit settings or value are missing; volume fallback is disabled")
   if (context.items.some((item) => !positive(item.unit_price) || !Number.isInteger(item.quantity) || item.quantity <= 0)) {
     throw new Error("Demo volume requires trustworthy cart item values")
   }
   const insurance = Math.round(context.items.reduce((sum, item) => sum + item.unit_price! * item.quantity, 0) * 100) / 100
   // One explicit demonstration package; this is not a packing algorithm.
-  return { payload: { ...base, volumes: [{ ...config.demoVolume, insurance }] }, source: "demo_volume" as const }
+  return {
+    payload: { ...base, volumes: [{ ...volume, insurance }] },
+    source: config.environment === "production" ? "production_preview_volume" as const : "demo_volume" as const,
+  }
 }
 
 function price(value: unknown): number | undefined {
@@ -88,6 +92,14 @@ export function normalizeQuotes(raw: unknown, metadata: Quote["quote_metadata"])
   })
 }
 
+function baseUrl(environment: MelhorEnvioConfig["environment"]): string {
+  switch (environment) {
+    case "sandbox": return "https://sandbox.melhorenvio.com.br"
+    case "production": return "https://melhorenvio.com.br"
+    default: throw new Error("Invalid Melhor Envio environment")
+  }
+}
+
 export class MelhorEnvioClient {
   constructor(private readonly config: MelhorEnvioConfig, private readonly fetcher: typeof fetch = fetch) {}
 
@@ -96,7 +108,7 @@ export class MelhorEnvioClient {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 8000)
     try {
-      const response = await this.fetcher("https://sandbox.melhorenvio.com.br/api/v2/me/shipment/calculate", {
+      const response = await this.fetcher(`${baseUrl(this.config.environment)}/api/v2/me/shipment/calculate`, {
         method: "POST",
         headers: {
           Accept: "application/json",
@@ -107,7 +119,7 @@ export class MelhorEnvioClient {
         body: JSON.stringify(payload),
         signal: controller.signal,
       })
-      if (!response.ok) throw new Error(`Melhor Envio sandbox quote failed (${response.status})`)
+      if (!response.ok) throw new Error(`Melhor Envio quote failed (${response.status})`)
       return normalizeQuotes(await response.json(), {
         source,
         origin_postal_code: this.config.originPostalCode,

@@ -2,6 +2,7 @@ import { readMelhorEnvioConfig } from "../config"
 import { buildQuotePayload, MelhorEnvioClient, normalizeQuotes } from "../quote"
 import { MelhorEnvioFulfillmentService } from "../service"
 import { fulfillmentProviders } from "../providers"
+import { readFileSync } from "node:fs"
 
 const env = {
   MELHOR_ENVIO_ENV: "sandbox",
@@ -34,12 +35,33 @@ describe("Melhor Envio sandbox quote", () => {
   it("requires explicit sandbox fallback and never accepts it in production", () => {
     expect(() => buildQuotePayload(config, cart)).toThrow(/fallback is disabled/)
     expect(() => readMelhorEnvioConfig({ ...env, MELHOR_ENVIO_ENV: "production", MELHOR_ENVIO_DEMO_FALLBACK_ENABLED: "true" })).toThrow(/only in Melhor Envio sandbox/)
-    expect(() => readMelhorEnvioConfig({ ...env, MELHOR_ENVIO_ENV: "production" })).toThrow(/production is disabled/)
+    expect(() => readMelhorEnvioConfig({ ...env, MELHOR_ENVIO_ENV: "invalid" })).toThrow(/sandbox or production/)
     const demo = readMelhorEnvioConfig({
       ...env, MELHOR_ENVIO_DEMO_FALLBACK_ENABLED: "true", MELHOR_ENVIO_DEMO_WEIGHT_KG: "0.5",
       MELHOR_ENVIO_DEMO_HEIGHT_CM: "10", MELHOR_ENVIO_DEMO_WIDTH_CM: "15", MELHOR_ENVIO_DEMO_LENGTH_CM: "20",
     })!
     expect(buildQuotePayload(demo, cart)).toMatchObject({ source: "demo_volume", payload: { volumes: [{ weight: 0.5, height: 10, width: 15, length: 20, insurance: 99.8 }] } })
+  })
+
+  it("defaults production preview off and requires explicit opt-in with all positive dimensions", () => {
+    const productionEnv = { ...env, MELHOR_ENVIO_ENV: "production" }
+    const production = readMelhorEnvioConfig(productionEnv)!
+    expect(production.environment).toBe("production")
+    expect(production.productionPreviewVolume).toBeUndefined()
+    expect(() => buildQuotePayload(production, cart)).toThrow(/fallback is disabled/)
+    expect(() => readMelhorEnvioConfig({ ...productionEnv, MELHOR_ENVIO_PRODUCTION_PREVIEW_FALLBACK_ENABLED: "true" })).toThrow(/four positive/)
+    expect(() => readMelhorEnvioConfig({ ...productionEnv, MELHOR_ENVIO_PRODUCTION_PREVIEW_FALLBACK_ENABLED: "yes" })).toThrow(/must be true or false/)
+    expect(() => readMelhorEnvioConfig({ ...env, MELHOR_ENVIO_PRODUCTION_PREVIEW_FALLBACK_ENABLED: "true" })).toThrow(/only in Melhor Envio production/)
+    const preview = readMelhorEnvioConfig({
+      ...productionEnv, MELHOR_ENVIO_PRODUCTION_PREVIEW_FALLBACK_ENABLED: "true",
+      MELHOR_ENVIO_DEMO_WEIGHT_KG: "0.5", MELHOR_ENVIO_DEMO_HEIGHT_CM: "10",
+      MELHOR_ENVIO_DEMO_WIDTH_CM: "15", MELHOR_ENVIO_DEMO_LENGTH_CM: "20",
+    })!
+    expect(preview.demoVolume).toBeUndefined()
+    expect(buildQuotePayload(preview, cart)).toMatchObject({
+      source: "production_preview_volume",
+      payload: { volumes: [{ weight: 0.5, height: 10, width: 15, length: 20, insurance: 99.8 }] },
+    })
   })
 
   it("normalizes custom price and delivery time, discarding unavailable services", () => {
@@ -69,13 +91,42 @@ describe("Melhor Envio sandbox quote", () => {
     expect(normalizeQuotes([{ ...response[0], custom_price: input }], metadata)).toEqual([])
   })
 
-  it("sends only the sandbox calculate request with required headers", async () => {
+  it.each([
+    ["sandbox", "https://sandbox.melhorenvio.com.br", "demo_volume"],
+    ["production", "https://melhorenvio.com.br", "production_preview_volume"],
+  ] as const)("sends only the %s calculate request with preview metadata", async (environment, base, source) => {
     const fetcher = jest.fn().mockResolvedValue({ ok: true, json: async () => response })
-    const client = new MelhorEnvioClient({ ...config, catalogWeightUnit: "g", catalogDimensionUnit: "cm" }, fetcher)
-    expect((await client.quote(cart))[0].price).toBe(20.5)
-    expect(fetcher).toHaveBeenCalledWith("https://sandbox.melhorenvio.com.br/api/v2/me/shipment/calculate", expect.objectContaining({
+    const configured = readMelhorEnvioConfig({
+      ...env, MELHOR_ENVIO_ENV: environment,
+      [environment === "sandbox" ? "MELHOR_ENVIO_DEMO_FALLBACK_ENABLED" : "MELHOR_ENVIO_PRODUCTION_PREVIEW_FALLBACK_ENABLED"]: "true",
+      MELHOR_ENVIO_DEMO_WEIGHT_KG: "0.5", MELHOR_ENVIO_DEMO_HEIGHT_CM: "10",
+      MELHOR_ENVIO_DEMO_WIDTH_CM: "15", MELHOR_ENVIO_DEMO_LENGTH_CM: "20",
+    })!
+    const client = new MelhorEnvioClient(configured, fetcher)
+    expect((await client.quote(cart))[0]).toMatchObject({ price: 20.5, quote_metadata: { source } })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher).toHaveBeenCalledWith(`${base}/api/v2/me/shipment/calculate`, expect.objectContaining({
       method: "POST", headers: expect.objectContaining({ Accept: "application/json", "Content-Type": "application/json", "User-Agent": env.MELHOR_ENVIO_USER_AGENT, Authorization: "Bearer test-only-token" }),
     }))
+  })
+
+  it("has no cart, checkout or label generation endpoint in the client", () => {
+    const clientSource = readFileSync(require.resolve("../quote"), "utf8")
+    expect(clientSource).not.toMatch(/\/api\/v2\/me\/(cart|shipment\/(checkout|generate))/)
+    expect(Object.getOwnPropertyNames(MelhorEnvioClient.prototype)).toEqual(["constructor", "quote"])
+  })
+
+  it("rejects fulfillment, cancellation and returns without contacting the quote client", async () => {
+    const spy = jest.spyOn(MelhorEnvioClient.prototype, "quote")
+    try {
+      const provider = new MelhorEnvioFulfillmentService({}, readMelhorEnvioConfig({ ...env, MELHOR_ENVIO_ENV: "production" })!)
+      await expect(provider.createFulfillment({}, [], undefined, {})).rejects.toThrow(/outside this release/)
+      await expect(provider.cancelFulfillment()).rejects.toThrow(/outside this release/)
+      await expect(provider.createReturnFulfillment()).rejects.toThrow(/outside this release/)
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it("re-quotes selected service and ignores a browser-supplied price", async () => {

@@ -1,20 +1,22 @@
-# Melhor Envio sandbox: cotação no checkout
+# Melhor Envio: cotação no checkout
 
-Esta fase chama somente `POST https://sandbox.melhorenvio.com.br/api/v2/me/shipment/calculate`. Nenhuma etiqueta é comprada ou criada. O provider recusa operações de fulfillment.
+Esta fase chama somente `POST /api/v2/me/shipment/calculate` em `https://sandbox.melhorenvio.com.br` ou `https://melhorenvio.com.br`, conforme o ambiente validado. Nenhuma etiqueta é comprada ou criada. O provider recusa criação, cancelamento e retorno de fulfillment em ambos os ambientes.
 
 ## Configuração server-side
 
 Configure no secret store, sem enviar valores pelo chat ou ao storefront:
 
-- `MELHOR_ENVIO_ENV=sandbox`
+- `MELHOR_ENVIO_ENV=sandbox|production`
 - `MELHOR_ENVIO_ACCESS_TOKEN`
 - `MELHOR_ENVIO_USER_AGENT` com nome da aplicação e email técnico
 - `MELHOR_ENVIO_ORIGIN_POSTAL_CODE=50610545`
-- `MELHOR_ENVIO_SERVICE_IDS`: IDs numéricos de serviços obtidos de uma resposta de cotação sandbox, separados por vírgula. Confirme o par ID, transportadora e nome na resposta; não deduza o ID pelo nome.
+- `MELHOR_ENVIO_SERVICE_IDS`: IDs numéricos de serviços obtidos de uma resposta de cotação do ambiente escolhido, separados por vírgula. Para a demonstração controlada em production, o owner confirmou `1,2,3` (Correios PAC, Correios SEDEX e Jadlog .Package). Confirme o par ID, transportadora e nome na resposta; o código não fixa os IDs.
 
 O catálogo só é usado com peso, altura, largura e comprimento positivos em **todas** as variantes do carrinho, valor unitário positivo e unidades explícitas em `MELHOR_ENVIO_CATALOG_WEIGHT_UNIT=g|kg` e `MELHOR_ENVIO_CATALOG_DIMENSION_UNIT=mm|cm`. O código converte para kg e cm. A fonte versionada não comprova esses campos no catálogo online.
 
-Se não houver medidas confiáveis para a demonstração, ative explicitamente `MELHOR_ENVIO_DEMO_FALLBACK_ENABLED=true` e informe `MELHOR_ENVIO_DEMO_WEIGHT_KG`, `MELHOR_ENVIO_DEMO_HEIGHT_CM`, `MELHOR_ENVIO_DEMO_WIDTH_CM`, `MELHOR_ENVIO_DEMO_LENGTH_CM`. Nesse caso a cotação usa um único volume fictício para o carrinho inteiro e marca `quote_metadata.source=demo_volume`. Nunca ative isso fora do sandbox. `MELHOR_ENVIO_ENV=production` é recusado neste release.
+Se não houver medidas confiáveis para a demonstração, informe `MELHOR_ENVIO_DEMO_WEIGHT_KG`, `MELHOR_ENVIO_DEMO_HEIGHT_CM`, `MELHOR_ENVIO_DEMO_WIDTH_CM`, `MELHOR_ENVIO_DEMO_LENGTH_CM` e ative explicitamente a flag do ambiente: `MELHOR_ENVIO_DEMO_FALLBACK_ENABLED=true` apenas em sandbox, ou `MELHOR_ENVIO_PRODUCTION_PREVIEW_FALLBACK_ENABLED=true` apenas em production. Ambas têm default desligado. Com medidas de catálogo ausentes, a cotação usa um único volume para o carrinho inteiro, com `quote_metadata.source=demo_volume` em sandbox ou `quote_metadata.source=production_preview_volume` em production. Sem as quatro medidas positivas, a configuração com preview ativa falha antes da cotação. A flag sandbox não ativa preview em production.
+
+O preview em production permite somente a demonstração controlada. **BLOCKER antes do release público:** desativar `MELHOR_ENVIO_PRODUCTION_PREVIEW_FALLBACK_ENABLED` e confirmar peso, dimensões e unidades reais do catálogo. Este modo não deve ser apresentado como frete definitivo.
 
 ## Vincular opções no Medusa Admin
 

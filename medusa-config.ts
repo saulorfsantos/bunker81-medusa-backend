@@ -1,8 +1,16 @@
 import { loadEnv, defineConfig } from '@medusajs/framework/utils'
 import { readMelhorEnvioConfig } from './src/modules/melhor-envio/config'
 import { fulfillmentProviders } from './src/modules/melhor-envio/providers'
+import { assertCard140SandboxEnv } from './src/local-sandbox/preflight'
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
+const card140FixtureRequested = process.argv.some((argument) =>
+  argument.includes("card140-local-fixture")
+)
+if (process.env.CARD140_LOCAL_SANDBOX || card140FixtureRequested) {
+  assertCard140SandboxEnv(process.env)
+}
+
 const melhorEnvioConfig = readMelhorEnvioConfig(process.env)
 
 const mercadoPagoAccessToken = process.env.MERCADO_PAGO_ACCESS_TOKEN
@@ -24,6 +32,7 @@ const mercadoPagoConfigured = Boolean(
     mercadoPagoWebhookBaseUrl &&
     mercadoPagoLiveMode !== undefined
 )
+const localFileProvider = process.env.FILE_PROVIDER === "local"
 
 if (mercadoPagoRequested && !mercadoPagoConfigured) {
   throw new Error(
@@ -70,19 +79,30 @@ module.exports = defineConfig({
       options: {
         providers: [
           {
-            resolve: "@medusajs/file-s3",
-            id: "s3",
-            options: {
-              file_url: process.env.S3_FILE_URL,
-              endpoint: process.env.S3_ENDPOINT,
-              bucket: process.env.S3_BUCKET,
-              access_key_id: process.env.S3_ACCESS_KEY_ID,
-              secret_access_key: process.env.S3_SECRET_ACCESS_KEY,
-              region: "auto",
-              additional_client_config: {
-                forcePathStyle: true,
-              },
-            },
+            ...(localFileProvider
+              ? {
+                  resolve: "@medusajs/medusa/file-local",
+                  id: "local",
+                  options: {
+                    upload_dir: process.env.LOCAL_FILE_UPLOAD_DIR,
+                    backend_url: process.env.LOCAL_FILE_BACKEND_URL,
+                  },
+                }
+              : {
+                  resolve: "@medusajs/file-s3",
+                  id: "s3",
+                  options: {
+                    file_url: process.env.S3_FILE_URL,
+                    endpoint: process.env.S3_ENDPOINT,
+                    bucket: process.env.S3_BUCKET,
+                    access_key_id: process.env.S3_ACCESS_KEY_ID,
+                    secret_access_key: process.env.S3_SECRET_ACCESS_KEY,
+                    region: "auto",
+                    additional_client_config: {
+                      forcePathStyle: true,
+                    },
+                  },
+                }),
           },
         ],
       },

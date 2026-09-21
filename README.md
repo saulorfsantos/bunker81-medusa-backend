@@ -40,6 +40,9 @@ This starter is compatible with versions >= 2 of `@medusajs/medusa`.
 
 Visit the [Quickstart Guide](https://docs.medusajs.com/learn/installation) to set up a server.
 
+For the isolated BRL/Brazil fixture used by Card 140, see
+[`docs/card140-local-sandbox.md`](docs/card140-local-sandbox.md).
+
 Visit the [Docs](https://docs.medusajs.com/learn/installation#get-started) to learn more about our system requirements.
 
 ## What is Medusa
@@ -60,6 +63,5 @@ Join our [Discord server](https://discord.com/invite/medusajs) to meet other com
 - [Twitter](https://twitter.com/medusajs)
 - [LinkedIn](https://www.linkedin.com/company/medusajs)
 - [Medusa Blog](https://medusajs.com/blog/)
-
 
 

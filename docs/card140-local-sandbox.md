@@ -16,13 +16,14 @@ npm run local:up
 npm run local:prepare
 ```
 
-`local:up` valida primeiro a configuração, sobe PostgreSQL e Redis vinculados apenas a `127.0.0.1` e então confirma a identidade do banco e executa `PING` no Redis. `local:prepare` aplica somente migrations locais e cria uma fixture com:
+`local:up` valida primeiro a configuração, sobe PostgreSQL e Redis vinculados apenas a `127.0.0.1` e então confirma a identidade do banco e executa `PING` no Redis. `local:prepare` aplica somente migrations locais, cria a fixture e roda `local:check-ids`. A fixture contém:
 
 - store, região e moeda BRL/Brasil;
-- localização em São Paulo e estoque 25;
+- as quatro categorias raiz consumidas pelo storefront;
+- um produto sintético por categoria, sem imagens remotas;
+- localização em São Paulo e estoque 25 por variante;
 - zona de fulfillment brasileira;
 - frete manual fixo de teste;
-- um produto local sem imagens remotas;
 - provider de pagamento de sistema, sem Mercado Pago.
 
 Para iniciar o backend depois da preparação:
@@ -30,6 +31,22 @@ Para iniciar o backend depois da preparação:
 ```bash
 npm run local:dev
 ```
+
+## Paridade de IDs com o storefront
+
+O storefront revisado fixa `BRAZIL_REGION_ID` e `MEDUSA_CATEGORY_IDS` em `src/lib/medusa.ts`. Se a fixture gerasse IDs próprios, storefront e backend funcionariam isoladamente mas a vitrine ficaria vazia e o carrinho impossível.
+
+`src/local-sandbox/storefront-contract.ts` concentra esses identificadores públicos de catálogo — não são credenciais — e a fixture os fixa ao criar região e categorias. Isso é possível porque a propriedade `id` do DML é gerada por um hook `@BeforeCreate`/`@OnInit` que chama `generateEntityId(this.id, prefix)` e preserva qualquer valor já presente; nenhum SQL bruto ou reescrita de dados é usado.
+
+Para conferir a paridade a qualquer momento:
+
+```bash
+npm run local:check-ids
+```
+
+O check falha fechado e verifica: região esperada com BRL/BR; as quatro categorias esperadas ativas, não internas e na raiz; ao menos um produto publicado com variante em cada categoria consumida; os SKUs sintéticos; níveis de estoque; criação de carrinho na região esperada com preço unitário em BRL; e opções de frete alcançáveis a partir da localização da fixture.
+
+Se `src/lib/medusa.ts` mudar no storefront, atualize `storefront-contract.ts` — `npm run test:unit` compara os dois conjuntos de IDs e acusa a divergência antes de qualquer smoke com Docker.
 
 ## Fail-closed
 

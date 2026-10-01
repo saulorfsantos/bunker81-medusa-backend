@@ -1,0 +1,15 @@
+{
+  "login": {
+    "title": "Bem-vindo ao Bunker 81"
+  },
+  "invite": {
+    "title": "Bem-vindo ao Bunker 81",
+    "successHint": "Comece a usar o painel do Bunker 81 agora mesmo.",
+    "successAction": "Abrir o painel"
+  },
+  "notifications": {
+    "accessibility": {
+      "description": "Notificações sobre atividades da loja serão listadas aqui."
+    }
+  }
+}

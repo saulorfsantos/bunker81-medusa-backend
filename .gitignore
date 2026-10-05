@@ -1,7 +1,9 @@
 /dist
 .env
+.env.card140.local
 .DS_Store
 /uploads
+/static/card140/
 /node_modules
 yarn-error.log
 

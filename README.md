@@ -48,6 +48,27 @@ Medusa is a set of commerce modules and tools that allow you to build rich, reli
 
 Learn more about [Medusa’s architecture](https://docs.medusajs.com/learn/introduction/architecture) and [commerce modules](https://docs.medusajs.com/learn/fundamentals/modules/commerce-modules) in the Docs.
 
+## Customer account security
+
+The storefront customer area relies on Medusa's customer bearer/session authentication. A middleware
+on `GET /store/orders/:id` requires an authenticated customer and verifies that the order's
+`customer_id` matches the authenticated actor. Guest checkout remains available; the storefront uses
+the order returned by cart completion for the immediate guest confirmation instead of reopening this
+protected route.
+
+Customer password reset uses Medusa's 15-minute, single-use reset token and the SendGrid notification
+provider. Configure all of these values together in the deployment secret/config store:
+
+```bash
+STOREFRONT_URL=
+SENDGRID_API_KEY=
+SENDGRID_FROM=
+SENDGRID_PASSWORD_RESET_TEMPLATE=
+```
+
+The SendGrid dynamic template receives `email` and `reset_url`. Partial configuration fails startup;
+secrets must never be exposed to the storefront bundle.
+
 ## Community & Contributions
 
 The community and core team are available in [GitHub Discussions](https://github.com/medusajs/medusa/discussions), where you can ask for support, discuss roadmap, and share ideas.
@@ -60,6 +81,5 @@ Join our [Discord server](https://discord.com/invite/medusajs) to meet other com
 - [Twitter](https://twitter.com/medusajs)
 - [LinkedIn](https://www.linkedin.com/company/medusajs)
 - [Medusa Blog](https://medusajs.com/blog/)
-
 
 

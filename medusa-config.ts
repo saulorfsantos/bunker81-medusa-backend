@@ -25,12 +25,37 @@ const mercadoPagoConfigured = Boolean(
     mercadoPagoLiveMode !== undefined
 )
 
+const sendGridApiKey = process.env.SENDGRID_API_KEY
+const sendGridFrom = process.env.SENDGRID_FROM
+const sendGridPasswordResetTemplate =
+  process.env.SENDGRID_PASSWORD_RESET_TEMPLATE
+const storefrontUrl = process.env.STOREFRONT_URL
+const sendGridRequested = Boolean(
+  sendGridApiKey ||
+    sendGridFrom ||
+    sendGridPasswordResetTemplate ||
+    storefrontUrl
+)
+const sendGridConfigured = Boolean(
+  sendGridApiKey &&
+    sendGridFrom &&
+    sendGridPasswordResetTemplate &&
+    storefrontUrl
+)
+
 if (mercadoPagoRequested && !mercadoPagoConfigured) {
   throw new Error(
     "Mercado Pago requires MERCADO_PAGO_ACCESS_TOKEN, " +
       "MERCADO_PAGO_WEBHOOK_SECRET, and MERCADO_PAGO_WEBHOOK_BASE_URL " +
       "(or MEDUSA_BACKEND_URL), plus an explicit " +
       "MERCADO_PAGO_LIVE_MODE=true|false"
+  )
+}
+
+if (sendGridRequested && !sendGridConfigured) {
+  throw new Error(
+    "Customer password reset email requires SENDGRID_API_KEY, SENDGRID_FROM, " +
+      "SENDGRID_PASSWORD_RESET_TEMPLATE, and STOREFRONT_URL"
   )
 }
 
@@ -54,6 +79,26 @@ module.exports = defineConfig({
     disable: process.env.MEDUSA_DISABLE_ADMIN === "true",
   },
   modules: [
+    ...(sendGridConfigured
+      ? [
+          {
+            resolve: "@medusajs/medusa/notification",
+            options: {
+              providers: [
+                {
+                  resolve: "@medusajs/medusa/notification-sendgrid",
+                  id: "sendgrid",
+                  options: {
+                    channels: ["email"],
+                    api_key: sendGridApiKey,
+                    from: sendGridFrom,
+                  },
+                },
+              ],
+            },
+          },
+        ]
+      : []),
     ...(melhorEnvioConfig
       ? [{
           resolve: "@medusajs/medusa/fulfillment",

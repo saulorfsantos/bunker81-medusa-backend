@@ -1,6 +1,7 @@
 import { loadEnv, defineConfig } from '@medusajs/framework/utils'
 import { readMelhorEnvioConfig } from './src/modules/melhor-envio/config'
 import { fulfillmentProviders } from './src/modules/melhor-envio/providers'
+import { readResendConfig } from './src/modules/resend/config'
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 const melhorEnvioConfig = readMelhorEnvioConfig(process.env)
@@ -24,6 +25,8 @@ const mercadoPagoConfigured = Boolean(
     mercadoPagoWebhookBaseUrl &&
     mercadoPagoLiveMode !== undefined
 )
+
+const resendConfig = readResendConfig(process.env)
 
 if (mercadoPagoRequested && !mercadoPagoConfigured) {
   throw new Error(
@@ -54,6 +57,25 @@ module.exports = defineConfig({
     disable: process.env.MEDUSA_DISABLE_ADMIN === "true",
   },
   modules: [
+    ...(resendConfig
+      ? [
+          {
+            resolve: "@medusajs/medusa/notification",
+            options: {
+              providers: [
+                {
+                  resolve: "./src/modules/resend",
+                  id: "resend",
+                  options: {
+                    channels: ["email"],
+                    ...resendConfig,
+                  },
+                },
+              ],
+            },
+          },
+        ]
+      : []),
     ...(melhorEnvioConfig
       ? [{
           resolve: "@medusajs/medusa/fulfillment",

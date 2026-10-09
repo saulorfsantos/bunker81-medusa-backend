@@ -7,7 +7,8 @@ describe("customer password reset notification", () => {
     process.env = {
       ...originalEnv,
       STOREFRONT_URL: "https://loja.example.com",
-      SENDGRID_PASSWORD_RESET_TEMPLATE: "d-template",
+      RESEND_API_KEY: "test-key",
+      RESEND_FROM: "Bunker 81 <loja@example.com>",
     }
   })
 
@@ -44,7 +45,7 @@ describe("customer password reset notification", () => {
     expect(createNotifications).toHaveBeenCalledWith({
       to: "cliente@example.com",
       channel: "email",
-      template: "d-template",
+      template: "customer-password-reset",
       data: {
         email: "cliente@example.com",
         reset_url:
@@ -54,7 +55,7 @@ describe("customer password reset notification", () => {
   })
 
   test("fails closed when real email configuration is absent", async () => {
-    delete process.env.SENDGRID_PASSWORD_RESET_TEMPLATE
+    delete process.env.RESEND_API_KEY
     await expect(
       passwordResetHandler({
         event: {
@@ -67,6 +68,15 @@ describe("customer password reset notification", () => {
         },
         container: { resolve: jest.fn() },
       } as never)
-    ).rejects.toThrow("SENDGRID_PASSWORD_RESET_TEMPLATE")
+    ).rejects.toThrow("RESEND_API_KEY")
+  })
+
+  test("does not intercept admin password reset events", async () => {
+    const resolve = jest.fn()
+    await passwordResetHandler({
+      event: { name: "auth.password_reset", data: { actor_type: "user", entity_id: "admin@example.com", token: "token" } },
+      container: { resolve },
+    } as never)
+    expect(resolve).not.toHaveBeenCalled()
   })
 })

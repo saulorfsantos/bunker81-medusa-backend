@@ -3,6 +3,7 @@ import type {
   SubscriberConfig,
 } from "@medusajs/framework"
 import { Modules } from "@medusajs/framework/utils"
+import { readResendConfig } from "../modules/resend/config"
 
 interface PasswordResetEvent {
   entity_id: string
@@ -27,11 +28,10 @@ export default async function passwordResetHandler({
 }: SubscriberArgs<PasswordResetEvent>) {
   if (data.actor_type !== "customer") return
 
-  const storefrontUrl = process.env.STOREFRONT_URL
-  const template = process.env.SENDGRID_PASSWORD_RESET_TEMPLATE
-  if (!storefrontUrl || !template) {
+  const resendConfig = readResendConfig(process.env)
+  if (!resendConfig) {
     throw new Error(
-      "Customer password reset email requires STOREFRONT_URL and SENDGRID_PASSWORD_RESET_TEMPLATE"
+      "Customer password reset email requires RESEND_API_KEY, RESEND_FROM, and STOREFRONT_URL"
     )
   }
 
@@ -39,11 +39,11 @@ export default async function passwordResetHandler({
   await notificationModuleService.createNotifications({
     to: data.entity_id,
     channel: "email",
-    template,
+    template: "customer-password-reset",
     data: {
       email: data.entity_id,
       reset_url: buildCustomerResetUrl(
-        storefrontUrl,
+        resendConfig.storefront_url,
         data.token,
         data.entity_id
       ),

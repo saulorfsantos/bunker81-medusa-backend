@@ -52,6 +52,8 @@ Restaura os campos preenchidos por esta versão do script e preserva demais meta
 
 ## Verificação depois de aplicar
 
+Atualização 12/10: importação reportada concluída com 72 aplicados; Store API confirmou 72 variantes com medidas completas. O log identificou o erro posterior como `Melhor Envio quotes require BRL`: a projeção do carrinho no workflow de cálculo do Medusa 2.17 omite a moeda. O provider passa a consultar apenas `id,currency_code` no módulo Cart quando a moeda está ausente, com dependência declarada no módulo de fulfillment. Continua recusando moeda diferente de BRL e ignora moeda/preço fornecidos pelo browser. Publicar a correção e repetir a cotação; não é necessário repetir a importação dos produtos.
+
 1. Editar/salvar novamente o endereço no checkout e confirmar PAC/SEDEX/Jadlog conforme serviços realmente disponíveis.
 2. Conferir cotação com uma unidade, múltiplas unidades e carrinho misto; selecionar frete e conferir totais. Preservar retirada R$0.
 3. Se continuar indisponível, obter erro sanitizado do cálculo. Em 12/10, antes de aplicar perfis, um carrinho técnico sem e-mail/pagamento/pedido retornou HTTP 500 no calculate. Medidas ausentes são comprovadas; configuração das unidades/token, contexto de cotação e erro específico ainda não foram verificados no runtime.

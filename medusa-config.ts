@@ -79,6 +79,7 @@ module.exports = defineConfig({
     ...(melhorEnvioConfig
       ? [{
           resolve: "@medusajs/medusa/fulfillment",
+          dependencies: ["cart"],
           options: {
             providers: fulfillmentProviders(melhorEnvioConfig),
           },

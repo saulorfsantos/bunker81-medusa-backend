@@ -8,21 +8,25 @@ import type {
   FulfillmentItemDTO,
   FulfillmentOption,
   FulfillmentOrderDTO,
+  ICartModuleService,
 } from "@medusajs/framework/types"
 import { MelhorEnvioConfig } from "./config"
 import { MelhorEnvioClient, Quote, QuoteContext } from "./quote"
 
 type OptionData = { service_id?: number }
+type InjectedDependencies = { cart?: Pick<ICartModuleService, "retrieveCart"> }
 
 export class MelhorEnvioFulfillmentService extends AbstractFulfillmentProviderService {
   static identifier = "melhor-envio"
   private readonly client: MelhorEnvioClient
   private readonly config: MelhorEnvioConfig
+  private readonly cart?: InjectedDependencies["cart"]
 
-  constructor(_: unknown, config: MelhorEnvioConfig) {
+  constructor({ cart }: InjectedDependencies, config: MelhorEnvioConfig) {
     super()
     this.config = config
     this.client = new MelhorEnvioClient(config)
+    this.cart = cart
   }
 
   async getFulfillmentOptions(): Promise<FulfillmentOption[]> {
@@ -37,12 +41,27 @@ export class MelhorEnvioFulfillmentService extends AbstractFulfillmentProviderSe
     return this.validateOption((data.data || {}) as OptionData)
   }
 
-  private quoteContext(context: CalculateShippingOptionPriceDTO["context"]): QuoteContext {
+  private async quoteContext(context: CalculateShippingOptionPriceDTO["context"]): Promise<QuoteContext> {
     const shippingAddress = context.shipping_address as { postal_code?: string; country_code?: string } | undefined
     if (shippingAddress?.country_code?.toLowerCase() !== "br") throw new Error("Melhor Envio supports Brazilian delivery only")
+    // Medusa 2.17's standalone calculate workflow omits currency_code from its
+    // cart projection. Read that one field from the server-side cart service;
+    // never assume BRL or accept currency/price supplied in browser data.
+    let currencyCode = typeof context.currency_code === "string" ? context.currency_code.trim() : ""
+    if (!currencyCode) {
+      if (typeof context.id !== "string" || !context.id || !this.cart) {
+        throw new Error("Melhor Envio requires a cart with a verifiable currency")
+      }
+      const cart = await this.cart.retrieveCart(context.id, { select: ["id", "currency_code"] })
+      if (cart.id !== context.id || typeof cart.currency_code !== "string" || !cart.currency_code.trim()) {
+        throw new Error("Melhor Envio could not verify the cart currency")
+      }
+      currencyCode = cart.currency_code.trim()
+    }
+    if (currencyCode.toLowerCase() !== "brl") throw new Error("Melhor Envio quotes require BRL")
     return {
       postalCode: shippingAddress.postal_code || "",
-      currencyCode: String(context.currency_code || ""),
+      currencyCode,
       items: (context.items || []) as QuoteContext["items"],
     }
   }
@@ -50,7 +69,7 @@ export class MelhorEnvioFulfillmentService extends AbstractFulfillmentProviderSe
   private async selectedQuote(optionData: OptionData, context: CalculateShippingOptionPriceDTO["context"]): Promise<Quote> {
     const serviceId = Number(optionData.service_id)
     if (!this.config.serviceIds.includes(serviceId)) throw new Error("Unknown Melhor Envio service ID")
-    const quotes = await this.client.quote(this.quoteContext(context))
+    const quotes = await this.client.quote(await this.quoteContext(context))
     const quote = quotes.find((item) => item.service_id === serviceId)
     if (!quote) throw new Error("Requested Melhor Envio service is unavailable for this cart")
     return quote

@@ -86,7 +86,9 @@ and payer identification from the session data persisted after initialization.
 
 - Card creation always sends `capture: false`. The remote authorization is
   captured only from Medusa's `capturePayment` lifecycle, after a Medusa
-  `Payment` exists.
+  `Payment` exists. Optional automatic capture after `order.placed` and recovery
+  are documented in `docs/mercado-pago-auto-capture.md`; activation requires
+  `MERCADO_PAGO_AUTO_CAPTURE_FROM` and Redis.
 - Pix remains asynchronous and maps pending states to
   `pending_authorization`, allowing Medusa to create an awaiting-payment order.
 - Deleting/canceling an authorization cancels it remotely. If a payment was

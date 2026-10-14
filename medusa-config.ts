@@ -2,6 +2,7 @@ import { loadEnv, defineConfig } from '@medusajs/framework/utils'
 import { readMelhorEnvioConfig } from './src/modules/melhor-envio/config'
 import { fulfillmentProviders } from './src/modules/melhor-envio/providers'
 import { readResendConfig } from './src/modules/resend/config'
+import { autoCaptureFrom } from './src/modules/mercado-pago/auto-capture-config'
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 const melhorEnvioConfig = readMelhorEnvioConfig(process.env)
@@ -27,6 +28,10 @@ const mercadoPagoConfigured = Boolean(
 )
 
 const resendConfig = readResendConfig(process.env)
+const autoCaptureEnabled = Boolean(autoCaptureFrom())
+if (autoCaptureEnabled && !process.env.REDIS_URL) {
+  throw new Error("Mercado Pago auto-capture requires REDIS_URL for distributed locking")
+}
 
 if (mercadoPagoRequested && !mercadoPagoConfigured) {
   throw new Error(
@@ -57,6 +62,15 @@ module.exports = defineConfig({
     disable: process.env.MEDUSA_DISABLE_ADMIN === "true",
   },
   modules: [
+    ...(autoCaptureEnabled ? [{
+      resolve: "@medusajs/medusa/locking",
+      options: { providers: [{
+        resolve: "@medusajs/medusa/locking-redis",
+        id: "bunker-redis-lock",
+        is_default: true,
+        options: { redisUrl: process.env.REDIS_URL },
+      }] },
+    }] : []),
     ...(resendConfig
       ? [
           {

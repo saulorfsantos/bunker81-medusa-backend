@@ -122,7 +122,7 @@ that creates the corresponding Medusa refund or operational review record.
 
 ## Pix polling reconciliation
 
-`src/jobs/mercado-pago-pix-reconciliation.ts` runs every five minutes. It pages
+`src/jobs/mercado-pago-pix-reconciliation.ts` runs every minute. It pages
 through Pix sessions in `pending_authorization`, retrieves their authoritative
 remote state through the provider, handles expired Pix cancellation, and sends
 newly captured sessions through Medusa's `processPaymentWorkflow`. Webhooks are

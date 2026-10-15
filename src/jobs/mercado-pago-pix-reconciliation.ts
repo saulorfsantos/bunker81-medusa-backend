@@ -186,5 +186,6 @@ export default async function reconcilePendingMercadoPagoPix(
 
 export const config = {
   name: "mercado-pago-pix-reconciliation",
-  schedule: "*/5 * * * *",
+  // The storefront polls for 90 seconds. A five-minute fallback can miss that window.
+  schedule: "* * * * *",
 }

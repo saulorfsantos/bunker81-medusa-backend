@@ -5,29 +5,29 @@ import type { ImportProduct } from "../catalog-import-core"
 // (Saulo, 16 Oct 2026). Items without a printed price, sold out, already in the store or
 // outside the menu (camping, slingshot) were left out. No stock: they show as unavailable.
 export const leaoProducts: ImportProduct[] = [
-  // Armas Airsoft > Sniper / Shotgun — page 3
+  // Armas Airsoft — page 3
   {
     handle: "sniper-airsoft-m40-sa-s02-core-multicam-specna-arms", sku: "SA-S02-MC", cost: 899,
     title: "Sniper de Airsoft M40 SA-S02 Core S-Series Multicam Specna Arms", brand: "Specna Arms",
-    category_handle: "sniper-shotgun", source: "Leão Squadrão BR, p. 3",
+    category_handle: "armas-airsoft", source: "Leão Squadrão BR, p. 3",
     description: "Sniper de airsoft M40 da linha Core S-Series da Specna Arms, acabamento Multicam. Acompanha 3 magazines.",
   },
   {
     handle: "sniper-airsoft-m40-a5-sa-s03-core-multicam-specna-arms", sku: "SA-S03-MC", cost: 1049,
     title: "Sniper de Airsoft M40 A5 SA-S03 Core S-Series Multicam Specna Arms", brand: "Specna Arms",
-    category_handle: "sniper-shotgun", source: "Leão Squadrão BR, p. 3",
+    category_handle: "armas-airsoft", source: "Leão Squadrão BR, p. 3",
     description: "Sniper de airsoft M40 A5 da linha Core S-Series da Specna Arms, acabamento Multicam. Acompanha 3 magazines.",
   },
   {
     handle: "sniper-airsoft-m40-a5-sa-s03-core-tan-specna-arms", sku: "SA-S03-TAN", cost: 779,
     title: "Sniper de Airsoft M40 A5 SA-S03 Core S-Series Tan Specna Arms", brand: "Specna Arms",
-    category_handle: "sniper-shotgun", source: "Leão Squadrão BR, p. 3",
+    category_handle: "armas-airsoft", source: "Leão Squadrão BR, p. 3",
     description: "Sniper de airsoft M40 A5 da linha Core S-Series da Specna Arms, acabamento Tan. Acompanha 3 magazines.",
   },
   {
     handle: "sniper-airsoft-m40-a5-sa-s03-core-verde-oliva-specna-arms", sku: "SA-S03-OLV", cost: 779,
     title: "Sniper de Airsoft M40 A5 SA-S03 Core S-Series Verde Oliva Specna Arms", brand: "Specna Arms",
-    category_handle: "sniper-shotgun", source: "Leão Squadrão BR, p. 3",
+    category_handle: "armas-airsoft", source: "Leão Squadrão BR, p. 3",
     description: "Sniper de airsoft M40 A5 da linha Core S-Series da Specna Arms, acabamento verde oliva. Acompanha 3 magazines.",
   },
   // Armas Airsoft — page 28

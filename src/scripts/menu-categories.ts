@@ -3,15 +3,16 @@ import type { MedusaContainer } from "@medusajs/framework"
 import type { IProductModuleService } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
-  assignProducts, orphanProducts, planMenu, prepareMenu, rollbackMenu, suggestCategory, switchMenu, validateMenu,
+  assignProducts, exclusiveAssign, orphanProducts, restoreProductCategories, planMenu, prepareMenu, rollbackMenu, suggestCategory, switchMenu, validateMenu,
   type Assignment, type CategoryRow, type MenuStore, type ProductRow,
 } from "./menu-categories-core"
 import { magazineBrandRules, menuCategories, retiredCategoryHandles, suggestionRules } from "./data/menu-categories-20261016"
 import { menuAssignments } from "./data/menu-assignments-20261016"
 
-const MODES = ["preview", "prepare", "assign", "switch", "rollback"] as const
+const MODES = ["preview", "prepare", "assign", "exclusive", "switch", "rollback", "restore-products"] as const
 
-// BUNKER_MENU_MODE=preview (default, read-only) | prepare | assign | switch | rollback
+// BUNKER_MENU_MODE=preview (default, read-only) | prepare | assign | exclusive | switch | rollback | restore-products
+// exclusive leaves each assigned product only in its menu category (undo: restore-products).
 // assign uses data/menu-assignments-20261016.ts, or BUNKER_MENU_ASSIGNMENTS (JSON file) when set.
 // switch refuses while products would leave the menu, unless BUNKER_MENU_ALLOW_ORPHANS=true.
 export default async function menuCategoriesCommand({ container }: { container: MedusaContainer }) {
@@ -28,11 +29,14 @@ export default async function menuCategoriesCommand({ container }: { container: 
     createCategory: async data => (await productService.createProductCategories([data]))[0] as CategoryRow,
     updateCategory: (id, data) => productService.updateProductCategories(id, data),
     listProducts: async () => (await productService.listProducts({}, {
-      select: ["id", "title"], relations: ["categories"], take: null,
+      select: ["id", "title", "metadata"], relations: ["categories"], take: null,
     })).map((product): ProductRow => ({
-      id: product.id, title: product.title, category_ids: (product.categories ?? []).map(category => category.id),
+      id: product.id, title: product.title, metadata: product.metadata,
+      category_ids: (product.categories ?? []).map(category => category.id),
     })),
     setProductCategories: (productId, categoryIds) => productService.updateProducts(productId, { category_ids: categoryIds }),
+    replaceProductCategories: (productId, categoryIds, metadata) =>
+      productService.updateProducts(productId, { category_ids: categoryIds, metadata }),
   }
 
   if (mode === "preview") {
@@ -54,6 +58,12 @@ export default async function menuCategoriesCommand({ container }: { container: 
     const file = process.env.BUNKER_MENU_ASSIGNMENTS
     const assignments = file ? JSON.parse(readFileSync(file, "utf8")) as Assignment[] : menuAssignments
     logger.info(`MENU_ASSIGNED ${JSON.stringify(await assignProducts(menuCategories, assignments, store))}`)
+  } else if (mode === "exclusive") {
+    const file = process.env.BUNKER_MENU_ASSIGNMENTS
+    const assignments = file ? JSON.parse(readFileSync(file, "utf8")) as Assignment[] : menuAssignments
+    logger.info(`MENU_EXCLUSIVE ${JSON.stringify(await exclusiveAssign(menuCategories, assignments, store))}`)
+  } else if (mode === "restore-products") {
+    logger.info(`MENU_PRODUCTS_RESTORED ${JSON.stringify(await restoreProductCategories(store))}`)
   } else if (mode === "switch") {
     const allowOrphans = process.env.BUNKER_MENU_ALLOW_ORPHANS === "true"
     logger.info(`MENU_SWITCHED ${JSON.stringify(await switchMenu(menuCategories, store, { allowOrphans }))}`)

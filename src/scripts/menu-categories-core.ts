@@ -14,7 +14,10 @@ export type CategoryRow = {
   is_active: boolean
   metadata?: Record<string, unknown> | null
 }
-export type ProductRow = { id: string; title: string; category_ids: string[] }
+export type ProductRow = { id: string; title: string; category_ids: string[]; metadata?: Record<string, unknown> | null }
+
+/** Product metadata key holding the categories a product had before `exclusive`. */
+export const PREVIOUS_CATEGORIES_KEY = "bunker_menu_previous_categories"
 export type Assignment = { product_id: string; category_handle: string }
 
 export type CategoryCreate = {
@@ -37,6 +40,7 @@ export type MenuStore = {
   updateCategory(id: string, data: CategoryUpdate): Promise<unknown>
   listProducts(): Promise<ProductRow[]>
   setProductCategories(productId: string, categoryIds: string[]): Promise<unknown>
+  replaceProductCategories(productId: string, categoryIds: string[], metadata: Record<string, unknown>): Promise<unknown>
 }
 
 type Marker = {
@@ -178,6 +182,58 @@ export async function assignProducts(menu: MenuCategory[], assignments: Assignme
     updated++
   }
   return { updated, unchanged, missing_products: missingProducts }
+}
+
+/**
+ * Leaves each assigned product only in its reviewed menu category: drops links to other menu
+ * categories (e.g. the reused Airsoft/Pressão/Acessórios parents) and keeps links outside the
+ * menu. The first previous list is saved in metadata so `restore-products` can undo it.
+ */
+export async function exclusiveAssign(menu: MenuCategory[], assignments: Assignment[], store: MenuStore) {
+  const rows = await store.listCategories()
+  const resolved = resolveMenu(menu, rows)
+  const menuIds = new Set([...resolved.values()].flatMap(row => row ? [row.id] : []))
+  const products = new Map((await store.listProducts()).map(product => [product.id, product]))
+  const wanted = new Map<string, Set<string>>()
+  const missingProducts: string[] = []
+  for (const { product_id, category_handle } of assignments) {
+    const row = resolved.get(category_handle)
+    if (!row) throw new Error(`Category ${category_handle} is not an existing menu category`)
+    if (!products.has(product_id)) {
+      missingProducts.push(product_id)
+      continue
+    }
+    wanted.set(product_id, (wanted.get(product_id) ?? new Set()).add(row.id))
+  }
+  let updated = 0
+  let unchanged = 0
+  for (const [productId, assigned] of wanted) {
+    const product = products.get(productId)!
+    const next = [...new Set([...assigned, ...product.category_ids.filter(id => !menuIds.has(id))])]
+    const same = next.length === product.category_ids.length && next.every(id => product.category_ids.includes(id))
+    if (same) {
+      unchanged++
+      continue
+    }
+    const metadata = { ...(product.metadata ?? {}) }
+    if (!Array.isArray(metadata[PREVIOUS_CATEGORIES_KEY])) metadata[PREVIOUS_CATEGORIES_KEY] = product.category_ids
+    await store.replaceProductCategories(productId, next, metadata)
+    updated++
+  }
+  return { updated, unchanged, missing_products: missingProducts }
+}
+
+/** Undoes `exclusive`: puts back the saved categories and removes the backup key. */
+export async function restoreProductCategories(store: MenuStore) {
+  let restored = 0
+  for (const product of await store.listProducts()) {
+    const previous = product.metadata?.[PREVIOUS_CATEGORIES_KEY]
+    if (!Array.isArray(previous)) continue
+    // null (not omission) so the backup is cleared whether Medusa merges or replaces metadata.
+    await store.replaceProductCategories(product.id, previous as string[], { ...product.metadata, [PREVIOUS_CATEGORIES_KEY]: null })
+    restored++
+  }
+  return { restored }
 }
 
 /** Products that would be left with no visible category once only the menu is active. */

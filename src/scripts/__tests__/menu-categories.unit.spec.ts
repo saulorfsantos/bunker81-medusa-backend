@@ -85,10 +85,10 @@ describe("storefront menu categories", () => {
     await expect(assignProducts(menuCategories, [{ product_id: "p1", category_handle: "bbs" }], store)).rejects.toThrow(/prepare first/)
     await prepareMenu(menuCategories, store)
     await expect(assignProducts(menuCategories, [{ product_id: "p1", category_handle: "cutelaria" }], store)).rejects.toThrow(/not in the menu/)
-    await expect(assignProducts(menuCategories, [{ product_id: "nope", category_handle: "bbs" }], store)).rejects.toThrow(/Unknown product/)
-    expect(await assignProducts(menuCategories, [{ product_id: "p1", category_handle: "bbs" }], store)).toEqual({ updated: 1, unchanged: 0 })
+    expect(await assignProducts(menuCategories, [{ product_id: "nope", category_handle: "bbs" }], store)).toEqual({ updated: 0, unchanged: 0, missing_products: ["nope"] })
+    expect(await assignProducts(menuCategories, [{ product_id: "p1", category_handle: "bbs" }], store)).toEqual({ updated: 1, unchanged: 0, missing_products: [] })
     expect(items.get("p1")!.category_ids).toEqual(["c_airsoft", byHandle("bbs")!.id])
-    expect(await assignProducts(menuCategories, [{ product_id: "p1", category_handle: "bbs" }], store)).toEqual({ updated: 0, unchanged: 1 })
+    expect(await assignProducts(menuCategories, [{ product_id: "p1", category_handle: "bbs" }], store)).toEqual({ updated: 0, unchanged: 1, missing_products: [] })
   })
 
   it("switch refuses orphans, then publishes the menu and rollback restores the old one", async () => {

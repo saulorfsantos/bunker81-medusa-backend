@@ -154,11 +154,15 @@ export async function assignProducts(menu: MenuCategory[], assignments: Assignme
   const resolved = resolveMenu(menu, rows)
   const products = new Map((await store.listProducts()).map(product => [product.id, product]))
   const wanted = new Map<string, Set<string>>()
+  const missingProducts: string[] = []
   for (const { product_id, category_handle } of assignments) {
     if (!allowed.has(category_handle)) throw new Error(`Category ${category_handle} is not in the menu`)
     const row = resolved.get(category_handle)
     if (!row) throw new Error(`Category ${category_handle} does not exist yet: run prepare first`)
-    if (!products.has(product_id)) throw new Error(`Unknown product ${product_id}`)
+    if (!products.has(product_id)) {
+      missingProducts.push(product_id)
+      continue
+    }
     wanted.set(product_id, (wanted.get(product_id) ?? new Set()).add(row.id))
   }
   let updated = 0
@@ -173,7 +177,7 @@ export async function assignProducts(menu: MenuCategory[], assignments: Assignme
     await store.setProductCategories(productId, next)
     updated++
   }
-  return { updated, unchanged }
+  return { updated, unchanged, missing_products: missingProducts }
 }
 
 /** Products that would be left with no visible category once only the menu is active. */

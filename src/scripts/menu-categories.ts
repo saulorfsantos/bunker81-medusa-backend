@@ -7,11 +7,12 @@ import {
   type Assignment, type CategoryRow, type MenuStore, type ProductRow,
 } from "./menu-categories-core"
 import { magazineBrandRules, menuCategories, retiredCategoryHandles, suggestionRules } from "./data/menu-categories-20261016"
+import { menuAssignments } from "./data/menu-assignments-20261016"
 
 const MODES = ["preview", "prepare", "assign", "switch", "rollback"] as const
 
 // BUNKER_MENU_MODE=preview (default, read-only) | prepare | assign | switch | rollback
-// assign reads BUNKER_MENU_ASSIGNMENTS (JSON file: [{ product_id, category_handle }]).
+// assign uses data/menu-assignments-20261016.ts, or BUNKER_MENU_ASSIGNMENTS (JSON file) when set.
 // switch refuses while products would leave the menu, unless BUNKER_MENU_ALLOW_ORPHANS=true.
 export default async function menuCategoriesCommand({ container }: { container: MedusaContainer }) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
@@ -51,8 +52,7 @@ export default async function menuCategoriesCommand({ container }: { container: 
     logger.info(`MENU_PREPARED ${JSON.stringify(await prepareMenu(menuCategories, store))}. New categories stay hidden until switch.`)
   } else if (mode === "assign") {
     const file = process.env.BUNKER_MENU_ASSIGNMENTS
-    if (!file) throw new Error("BUNKER_MENU_ASSIGNMENTS must point to the reviewed JSON file")
-    const assignments = JSON.parse(readFileSync(file, "utf8")) as Assignment[]
+    const assignments = file ? JSON.parse(readFileSync(file, "utf8")) as Assignment[] : menuAssignments
     logger.info(`MENU_ASSIGNED ${JSON.stringify(await assignProducts(menuCategories, assignments, store))}`)
   } else if (mode === "switch") {
     const allowOrphans = process.env.BUNKER_MENU_ALLOW_ORPHANS === "true"

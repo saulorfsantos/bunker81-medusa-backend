@@ -43,7 +43,9 @@ describe("storefront menu categories", () => {
     const acessorios = menuCategories.find(top => top.handle === "acessorios")!
     expect(acessorios.children.map(child => child.handle).slice(0, 2)).toEqual(["dots", "lunetas"])
     expect(menuCategories.find(top => top.handle === "pecas")!.children[0].name).toBe("Buckings e Engrenagens")
-    expect(menuCategories.find(top => top.handle === "magazines")!.children.map(child => child.name)).toEqual(["Rossi", "Specna Arms", "PTS"])
+    expect(menuCategories.find(top => top.handle === "magazines")!.children.map(child => child.name)).toEqual(["Rossi", "Specna Arms"])
+    expect(menuCategories.find(top => top.handle === "armas-airsoft")!.children.map(child => child.handle)).toEqual(["pistolas-gbb-co2"])
+    expect(menuCategories.find(top => top.handle === "airguns-carabinas")!.children.map(child => child.name)).toEqual(["Rossi", "Specna Arms"])
     expect(() => validateMenu([...menuCategories, { handle: "bbs", name: "Dup", children: [] }], [])).toThrow(/unique/)
     expect(() => validateMenu(menuCategories, ["acessorios"])).toThrow(/retired/)
   })
@@ -76,7 +78,7 @@ describe("storefront menu categories", () => {
     expect(await prepareMenu(menuCategories, store)).toEqual({ created: 0 })
     expect(byHandle("pistolas-gbb-co2")).toMatchObject({ parent_category_id: "c_airsoft", is_active: false })
     expect(byHandle("dots")).toMatchObject({ parent_category_id: "c_acessorios", is_active: false })
-    expect(byHandle("magazines-pts")?.parent_category_id).toBe(byHandle("magazines")?.id)
+    expect(byHandle("airguns-rossi")?.parent_category_id).toBe("c_pressao")
     expect(rows.get("c_airsoft")).toEqual(legacy[0])
     expect(store.updateCategory).not.toHaveBeenCalled()
   })
@@ -101,7 +103,7 @@ describe("storefront menu categories", () => {
     await expect(switchMenu(menuCategories, store, { allowOrphans: false })).rejects.toThrow(/prepare first/)
     await prepareMenu(menuCategories, store)
     await expect(switchMenu(menuCategories, store, { allowOrphans: false })).rejects.toThrow(/2 product\(s\) would leave the menu: Canivete \| Rifle/)
-    await assignProducts(menuCategories, [{ product_id: "p_rifle", category_handle: "rifles-eletricos-gbbr" }], store)
+    await assignProducts(menuCategories, [{ product_id: "p_rifle", category_handle: "armas-airsoft" }], store)
     const result = await switchMenu(menuCategories, store, { allowOrphans: true })
     expect(result).toMatchObject({ hidden: 2, orphans: 1 })
 

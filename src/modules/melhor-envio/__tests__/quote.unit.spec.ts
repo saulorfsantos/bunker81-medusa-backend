@@ -1,5 +1,5 @@
 import { readMelhorEnvioConfig } from "../config"
-import { buildQuotePayload, MelhorEnvioClient, normalizeQuotes } from "../quote"
+import { buildQuotePayload, MelhorEnvioClient, normalizeQuotes, quoteFailureReason } from "../quote"
 import { MelhorEnvioFulfillmentService } from "../service"
 import { fulfillmentProviders } from "../providers"
 import { readFileSync } from "node:fs"
@@ -108,6 +108,29 @@ describe("Melhor Envio sandbox quote", () => {
     expect(fetcher).toHaveBeenCalledWith(`${base}/api/v2/me/shipment/calculate`, expect.objectContaining({
       method: "POST", headers: expect.objectContaining({ Accept: "application/json", "Content-Type": "application/json", "User-Agent": env.MELHOR_ENVIO_USER_AGENT, Authorization: "Bearer test-only-token" }),
     }))
+  })
+
+  it("reports the field-level reason of a rejected quote", async () => {
+    const body = JSON.stringify({ message: "The given data was invalid.", errors: { "to.postal_code": ["O CEP de destino é inválido."], "products.0.weight": ["Peso acima do limite.", "Obrigatório."] } })
+    const fetcher = jest.fn().mockResolvedValue({ ok: false, status: 422, text: async () => body })
+    const client = new MelhorEnvioClient({ ...config, catalogWeightUnit: "g", catalogDimensionUnit: "cm" }, fetcher)
+    await expect(client.quote(cart)).rejects.toThrow(
+      "Melhor Envio quote failed (422): to.postal_code: O CEP de destino é inválido. | products.0.weight: Peso acima do limite.; Obrigatório."
+    )
+  })
+
+  it("keeps the status alone when the rejected body is empty or unreadable", async () => {
+    const quoteConfig = { ...config, catalogWeightUnit: "g" as const, catalogDimensionUnit: "cm" as const }
+    const empty = jest.fn().mockResolvedValue({ ok: false, status: 422, text: async () => "" })
+    await expect(new MelhorEnvioClient(quoteConfig, empty).quote(cart)).rejects.toThrow(/^Melhor Envio quote failed \(422\)$/)
+    const broken = jest.fn().mockResolvedValue({ ok: false, status: 502, text: async () => { throw new Error("stream") } })
+    await expect(new MelhorEnvioClient(quoteConfig, broken).quote(cart)).rejects.toThrow(/^Melhor Envio quote failed \(502\)$/)
+  })
+
+  it("redacts the token and bounds the failure reason", () => {
+    expect(quoteFailureReason(JSON.stringify({ message: "bad token test-only-token" }), "test-only-token")).toBe("bad token [redacted]")
+    expect(quoteFailureReason("<html>\n Unprocessable \n</html>", "x")).toBe("<html> Unprocessable </html>")
+    expect(quoteFailureReason(JSON.stringify({ error: "x".repeat(500) }), "t")).toHaveLength(301)
   })
 
   it("has no cart, checkout or label generation endpoint in the client", () => {

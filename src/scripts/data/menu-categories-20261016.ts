@@ -1,7 +1,7 @@
 import type { MenuCategory } from "../menu-categories-core"
 
 // Storefront menu approved by Adriano (sketch + audio, 16 October 2026) and adjusted by Saulo
-// the same evening (Armas Airsoft only Pistolas; Airguns by brand; no PTS). Order = menu order.
+// the same evening (Armas Airsoft only Pistolas; Airguns by brand; no PTS; Dots and Lunetas together). Order = menu order.
 // `reuse` renames an existing category so the products already in it stay in place.
 export const menuCategories: MenuCategory[] = [
   {
@@ -53,8 +53,7 @@ export const menuCategories: MenuCategory[] = [
   {
     handle: "acessorios", name: "Acessórios", reuse: "acessorios",
     children: [
-      { handle: "dots", name: "Dots" },
-      { handle: "lunetas", name: "Lunetas" },
+      { handle: "dots", name: "Dots / Lunetas" },
       { handle: "lanternas-laser", name: "Lanternas e Laser" },
       { handle: "stock-coronha", name: "Stock / Coronha" },
       { handle: "hand-guard", name: "Hand Guard" },
@@ -98,7 +97,7 @@ export const suggestionRules: Array<{ pattern: RegExp; handle: string }> = [
   { pattern: /mochila/i, handle: "mochilas" },
   { pattern: /maleta/i, handle: "maletas" },
   { pattern: /red ?dot|hologr[áa]fica|\bdot\b/i, handle: "dots" },
-  { pattern: /luneta|\blpvo\b/i, handle: "lunetas" },
+  { pattern: /luneta|\blpvo\b/i, handle: "dots" },
   { pattern: /lanterna|laser/i, handle: "lanternas-laser" },
   { pattern: /\bstock\b|coronha/i, handle: "stock-coronha" },
   { pattern: /hand ?guard/i, handle: "hand-guard" },

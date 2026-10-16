@@ -19,13 +19,13 @@ export const menuAssignments: Assignment[] = [
   { product_id: "prod_01KW4KQ8MG4AB3ZFXKNGSXAR6M", category_handle: "dots" }, // Red Dot Rossi M1
   { product_id: "prod_01KW4KQ8MG63Q70HK8MV30J50T", category_handle: "dots" }, // Red Dot Rossi ROMEO BK
   { product_id: "prod_01KW4KQ8MG39TCY2K143XWXJ28", category_handle: "dots" }, // Red Dot Rossi ROMEO TAN
-  { product_id: "prod_01KS8A4RG1SG65YQZ3XAX2NMCT", category_handle: "lunetas" }, // Luneta Discovery HT-NV 3x24IR Retículo Iluminado
-  { product_id: "prod_01KW4KQ8MF0W7DGESCAS1F3D1C", category_handle: "lunetas" }, // Luneta Rossi 1.2-6x24 LPVO
-  { product_id: "prod_01KW4KQ8MGJEV63XMPJK080S59", category_handle: "lunetas" }, // Luneta Rossi 4-16x42AO
-  { product_id: "prod_01KS8A4RG110HX3VDKSWJA9SRZ", category_handle: "lunetas" }, // Luneta Rossi 4.5x20 WA Mount 3/8 11mm
-  { product_id: "prod_01KW4KQ8MGXREG0D3QMXAR3J73", category_handle: "lunetas" }, // Luneta Rossi 6-24x42AO
-  { product_id: "prod_01KW4KQ8MF35H5BYJ9X48AZE1M", category_handle: "lunetas" }, // Luneta Rossi Gold Crown 3-9x40EG
-  { product_id: "prod_01KS8A4RG13MEBWEKHAPRPPPPY", category_handle: "lunetas" }, // Luneta Rossi Gold Crown 4x32 PCP
+  { product_id: "prod_01KS8A4RG1SG65YQZ3XAX2NMCT", category_handle: "dots" }, // Luneta Discovery HT-NV 3x24IR Retículo Iluminado
+  { product_id: "prod_01KW4KQ8MF0W7DGESCAS1F3D1C", category_handle: "dots" }, // Luneta Rossi 1.2-6x24 LPVO
+  { product_id: "prod_01KW4KQ8MGJEV63XMPJK080S59", category_handle: "dots" }, // Luneta Rossi 4-16x42AO
+  { product_id: "prod_01KS8A4RG110HX3VDKSWJA9SRZ", category_handle: "dots" }, // Luneta Rossi 4.5x20 WA Mount 3/8 11mm
+  { product_id: "prod_01KW4KQ8MGXREG0D3QMXAR3J73", category_handle: "dots" }, // Luneta Rossi 6-24x42AO
+  { product_id: "prod_01KW4KQ8MF35H5BYJ9X48AZE1M", category_handle: "dots" }, // Luneta Rossi Gold Crown 3-9x40EG
+  { product_id: "prod_01KS8A4RG13MEBWEKHAPRPPPPY", category_handle: "dots" }, // Luneta Rossi Gold Crown 4x32 PCP
   { product_id: "prod_01KS8A4RG1KN27YVKQNPYVD1MG", category_handle: "coldres" }, // Coldre Tan Porta Magazine M4/AK Rossi
   { product_id: "prod_01KS8A4RG1AQ57ZVVZRZTPTG7S", category_handle: "coldres" }, // Coldre Tan Porta Magazine Pistola Rossi
   { product_id: "prod_01M3Z407FZ3TB8M68M9A5TG32P", category_handle: "coletes-modulares" }, // COLETE MUDULAR PCR ROSSI

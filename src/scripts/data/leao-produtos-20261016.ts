@@ -37,29 +37,29 @@ export const leaoProducts: ImportProduct[] = [
     category_handle: "armas-airsoft", source: "Leão Squadrão BR, p. 28",
     description: "Kit com 2 pistolas de airsoft Beretta 92 FS de mola (260 FPS, capacidade para 12 BBs), 2 potes de 500 BBs 6 mm, 1 alvo de gel e 2 maletas Leão Slim.",
   },
-  // Acessórios > Lunetas — page 14 (LEAO1544 sold out, no price)
+  // Acessórios > Dots / Lunetas — page 14 (LEAO1544 sold out, no price)
   {
     handle: "mount-absorcao-11mm-luneta-25mm-warmmo", sku: "LEAO1541", cost: 100.42,
     title: "Mount com Absorção 11mm para Luneta 25mm Warmmo", brand: "Warmmo",
-    category_handle: "lunetas", source: "Leão Squadrão BR, p. 14",
+    category_handle: "dots", source: "Leão Squadrão BR, p. 14",
     description: "Mount com absorção de recuo para luneta de diâmetro 25 mm, para trilho de 11 mm.",
   },
   {
     handle: "mount-absorcao-22mm-luneta-25mm-warmmo", sku: "LEAO1542", cost: 100.42,
     title: "Mount com Absorção 22mm para Luneta 25mm Warmmo", brand: "Warmmo",
-    category_handle: "lunetas", source: "Leão Squadrão BR, p. 14",
+    category_handle: "dots", source: "Leão Squadrão BR, p. 14",
     description: "Mount com absorção de recuo para luneta de diâmetro 25 mm, para trilho de 22 mm.",
   },
   {
     handle: "mount-fixo-luneta-25mm-trilho-11mm-warmmo", sku: "LEAO1543", cost: 27.99,
     title: "Mount Fixo para Luneta 25mm Trilho 11mm Warmmo", brand: "Warmmo",
-    category_handle: "lunetas", source: "Leão Squadrão BR, p. 14",
+    category_handle: "dots", source: "Leão Squadrão BR, p. 14",
     description: "Mount único fixo para luneta de diâmetro 25 mm, para trilho de 11 mm.",
   },
   {
     handle: "mount-alto-luneta-25mm-trilho-11mm-warmmo", sku: "LEAO1545", cost: 19.21,
     title: "Mount Alto para Luneta 25mm Trilho 11mm Warmmo", brand: "Warmmo",
-    category_handle: "lunetas", source: "Leão Squadrão BR, p. 14",
+    category_handle: "dots", source: "Leão Squadrão BR, p. 14",
     description: "Mount alto para luneta de diâmetro 25 mm, para trilho de 11 mm.",
   },
   // Acessórios > Bipés, Grips e Trilhos — page 15

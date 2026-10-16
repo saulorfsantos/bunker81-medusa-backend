@@ -35,13 +35,13 @@ function fixture(products: ProductRow[] = []) {
 }
 
 describe("storefront menu categories", () => {
-  it("validates the approved menu: 7 tabs in sketch order, unique handles, Dots and Lunetas apart", () => {
+  it("validates the approved menu: 7 tabs in sketch order, unique handles, Dots / Lunetas together", () => {
     expect(() => validateMenu(menuCategories, retiredCategoryHandles)).not.toThrow()
     expect(menuCategories.map(top => top.name)).toEqual([
       "Armas Airsoft", "Airguns e Carabinas", "Suprimentos", "Peças", "Loadout", "Acessórios", "Magazines",
     ])
     const acessorios = menuCategories.find(top => top.handle === "acessorios")!
-    expect(acessorios.children.map(child => child.handle).slice(0, 2)).toEqual(["dots", "lunetas"])
+    expect(acessorios.children.slice(0, 2)).toEqual([{ handle: "dots", name: "Dots / Lunetas" }, { handle: "lanternas-laser", name: "Lanternas e Laser" }])
     expect(menuCategories.find(top => top.handle === "pecas")!.children[0].name).toBe("Buckings e Engrenagens")
     expect(menuCategories.find(top => top.handle === "magazines")!.children.map(child => child.name)).toEqual(["Rossi", "Specna Arms"])
     expect(menuCategories.find(top => top.handle === "armas-airsoft")!.children.map(child => child.handle)).toEqual(["pistolas-gbb-co2"])
@@ -57,7 +57,7 @@ describe("storefront menu categories", () => {
     expect(suggest("Magazine M4 Mid-Cap HP Polímero 130 BB's Rossi")).toBe("magazines-rossi")
     expect(suggest("Combo Specna Arms 5 Mid-Cap 125 BB's")).toBe("magazines-specna-arms")
     expect(suggest("Coldre Tan Porta Magazine Pistola Rossi")).toBe("coldres")
-    expect(suggest("Luneta Rossi 4.5x20 WA Mount 3/8 11mm")).toBe("lunetas")
+    expect(suggest("Luneta Rossi 4.5x20 WA Mount 3/8 11mm")).toBe("dots")
     expect(suggest("Mira Holográfica Dot 551 Red/Green Rossi")).toBe("dots")
     expect(suggest("Elevador de Mount para Trilho 22mm")).toBe("bipes-grips-trilhos")
     expect(suggest("Cilindro CO2 12g Leão")).toBe("gas")
@@ -112,7 +112,7 @@ describe("storefront menu categories", () => {
     expect(rows.get("c_pressao")).toMatchObject({ handle: "airguns-carabinas", rank: 1, is_active: true })
     expect(rows.get("c_acessorios")).toMatchObject({ rank: 5, is_active: true })
     expect(byHandle("magazines")).toMatchObject({ rank: 6, is_active: true })
-    expect(byHandle("lunetas")).toMatchObject({ rank: 1, is_active: true })
+    expect(byHandle("lanternas-laser")).toMatchObject({ rank: 1, is_active: true })
     expect(rows.get("c_cutelaria")!.is_active).toBe(false)
     expect(rows.get("c_rifles")!.is_active).toBe(false)
 

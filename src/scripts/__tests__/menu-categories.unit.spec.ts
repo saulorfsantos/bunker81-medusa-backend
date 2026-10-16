@@ -1,5 +1,5 @@
 import {
-  assignProducts, MENU_MARKER_KEY, menuHandles, planMenu, prepareMenu, rollbackMenu, suggestCategory, switchMenu, validateMenu,
+  assignProducts, exclusiveAssign, MENU_MARKER_KEY, PREVIOUS_CATEGORIES_KEY, restoreProductCategories, menuHandles, planMenu, prepareMenu, rollbackMenu, suggestCategory, switchMenu, validateMenu,
   type CategoryRow, type MenuStore, type ProductRow,
 } from "../menu-categories-core"
 import { magazineBrandRules, menuCategories, retiredCategoryHandles, suggestionRules } from "../data/menu-categories-20261016"
@@ -28,6 +28,7 @@ function fixture(products: ProductRow[] = []) {
     updateCategory: jest.fn(async (id, data) => { rows.set(id, { ...rows.get(id)!, ...data }) }),
     listProducts: async () => [...items.values()].map(product => structuredClone(product)),
     setProductCategories: jest.fn(async (id, ids) => { items.set(id, { ...items.get(id)!, category_ids: ids }) }),
+    replaceProductCategories: jest.fn(async (id, ids, metadata) => { items.set(id, { ...items.get(id)!, category_ids: ids, metadata }) }),
   }
   const byHandle = (handle: string) => [...rows.values()].find(row => row.handle === handle)
   return { rows, items, store, byHandle }
@@ -122,5 +123,33 @@ describe("storefront menu categories", () => {
     expect(rows.get("c_rifles")!.is_active).toBe(true)
     expect(byHandle("magazines")!.is_active).toBe(false)
     expect(byHandle("dots")!.is_active).toBe(false)
+  })
+
+  it("exclusive keeps each product only in its menu category and restore-products undoes it", async () => {
+    const { store, items, byHandle } = fixture([
+      { id: "p_bb", title: "BB's", category_ids: ["c_airsoft"], metadata: { keep: true } },
+      { id: "p_knife", title: "Canivete", category_ids: ["c_cutelaria"] },
+      { id: "p_dot", title: "Red Dot", category_ids: ["c_acessorios"] },
+    ])
+    await prepareMenu(menuCategories, store)
+    const assignments = [
+      { product_id: "p_bb", category_handle: "bbs" },
+      { product_id: "p_knife", category_handle: "loadout" },
+      { product_id: "p_dot", category_handle: "dots" },
+      { product_id: "gone", category_handle: "dots" },
+    ]
+    await assignProducts(menuCategories, assignments, store)
+    await switchMenu(menuCategories, store, { allowOrphans: false })
+    expect(items.get("p_bb")!.category_ids).toEqual(["c_airsoft", byHandle("bbs")!.id])
+
+    expect(await exclusiveAssign(menuCategories, assignments, store)).toEqual({ updated: 2, unchanged: 1, missing_products: ["gone"] })
+    expect(items.get("p_bb")).toMatchObject({ category_ids: [byHandle("bbs")!.id], metadata: { keep: true, [PREVIOUS_CATEGORIES_KEY]: ["c_airsoft", byHandle("bbs")!.id] } })
+    expect(items.get("p_knife")!.category_ids).toEqual(["c_cutelaria", byHandle("loadout")!.id])
+    expect(items.get("p_dot")!.category_ids).toEqual([byHandle("dots")!.id])
+    expect((await exclusiveAssign(menuCategories, assignments, store)).unchanged).toBe(3)
+
+    expect(await restoreProductCategories(store)).toEqual({ restored: 2 })
+    expect(items.get("p_bb")).toMatchObject({ category_ids: ["c_airsoft", byHandle("bbs")!.id], metadata: { keep: true, [PREVIOUS_CATEGORIES_KEY]: null } })
+    expect(await restoreProductCategories(store)).toEqual({ restored: 0 })
   })
 })

@@ -92,6 +92,32 @@ export function normalizeQuotes(raw: unknown, metadata: Quote["quote_metadata"])
   })
 }
 
+const MAX_FAILURE_REASON = 300
+
+// Melhor Envio explains a rejected quote in the body (Laravel-style `errors` per field).
+// Keep a short reason for diagnosis; never echo the access token.
+export function quoteFailureReason(raw: string, accessToken: string): string {
+  let reason = raw
+  try {
+    const body = JSON.parse(raw) as Record<string, unknown> | null
+    const errors = body?.errors
+    if (errors && typeof errors === "object" && !Array.isArray(errors)) {
+      reason = Object.entries(errors as Record<string, unknown>)
+        .map(([field, messages]) => `${field}: ${[messages].flat().join("; ")}`)
+        .join(" | ")
+    } else if (typeof body?.message === "string") {
+      reason = body.message
+    } else if (typeof body?.error === "string") {
+      reason = body.error
+    }
+  } catch {
+    // Not JSON: keep the raw text.
+  }
+  if (accessToken) reason = reason.split(accessToken).join("[redacted]")
+  reason = reason.replace(/\s+/g, " ").trim()
+  return reason.length > MAX_FAILURE_REASON ? `${reason.slice(0, MAX_FAILURE_REASON)}…` : reason
+}
+
 function baseUrl(environment: MelhorEnvioConfig["environment"]): string {
   switch (environment) {
     case "sandbox": return "https://sandbox.melhorenvio.com.br"
@@ -119,7 +145,10 @@ export class MelhorEnvioClient {
         body: JSON.stringify(payload),
         signal: controller.signal,
       })
-      if (!response.ok) throw new Error(`Melhor Envio quote failed (${response.status})`)
+      if (!response.ok) {
+        const reason = quoteFailureReason(await response.text().catch(() => ""), this.config.accessToken)
+        throw new Error(`Melhor Envio quote failed (${response.status})${reason ? `: ${reason}` : ""}`)
+      }
       return normalizeQuotes(await response.json(), {
         source,
         origin_postal_code: this.config.originPostalCode,

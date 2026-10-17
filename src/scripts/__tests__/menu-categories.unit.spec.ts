@@ -44,7 +44,7 @@ describe("storefront menu categories", () => {
     expect(acessorios.children.slice(0, 2)).toEqual([{ handle: "dots", name: "Dots / Lunetas" }, { handle: "lanternas-laser", name: "Lanternas e Laser" }])
     expect(menuCategories.find(top => top.handle === "pecas")!.children[0].name).toBe("Buckings e Engrenagens")
     expect(menuCategories.find(top => top.handle === "magazines")!.children.map(child => child.name)).toEqual(["Rossi", "Specna Arms"])
-    expect(menuCategories.find(top => top.handle === "armas-airsoft")!.children.map(child => child.handle)).toEqual(["pistolas-gbb-co2"])
+    expect(menuCategories.find(top => top.handle === "armas-airsoft")!.children.map(child => child.handle)).toEqual(["pistolas-gbb-co2", "rifles-eletricos-gbbr", "sniper-shotgun"])
     expect(menuCategories.find(top => top.handle === "airguns-carabinas")!.children.map(child => child.name)).toEqual(["Rossi", "Specna Arms"])
     expect(() => validateMenu([...menuCategories, { handle: "bbs", name: "Dup", children: [] }], [])).toThrow(/unique/)
     expect(() => validateMenu(menuCategories, ["acessorios"])).toThrow(/retired/)

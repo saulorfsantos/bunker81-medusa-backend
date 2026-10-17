@@ -1,13 +1,15 @@
 import type { MenuCategory } from "../menu-categories-core"
 
 // Storefront menu approved by Adriano (sketch + audio, 16 October 2026) and adjusted by Saulo
-// the same evening (Armas Airsoft only Pistolas; Airguns by brand; no PTS; Dots and Lunetas together). Order = menu order.
+// the same evening (Airguns by brand; no PTS; Dots and Lunetas together); on 17 Oct Armas Airsoft got its three sub-items back. Order = menu order.
 // `reuse` renames an existing category so the products already in it stay in place.
 export const menuCategories: MenuCategory[] = [
   {
     handle: "armas-airsoft", name: "Armas Airsoft", reuse: "airsoft",
     children: [
       { handle: "pistolas-gbb-co2", name: "Pistolas GBB / CO2" },
+      { handle: "rifles-eletricos-gbbr", name: "Rifles Elétricos / GBBR" },
+      { handle: "sniper-shotgun", name: "Sniper / Shotgun" },
     ],
   },
   {
@@ -105,7 +107,8 @@ export const suggestionRules: Array<{ pattern: RegExp; handle: string }> = [
   { pattern: /supressor|silenciador|porquinho|flash ?hider/i, handle: "supressores-porquinho-flash-hider" },
   { pattern: /\btracer\b(?!.*\bbb)/i, handle: "tracer" },
   { pattern: /pistola/i, handle: "pistolas-gbb-co2" },
-  { pattern: /\brifle|\baeg\b|gbbr|\bm4\b|\bak\b|sniper|shotgun|escopeta/i, handle: "armas-airsoft" },
+  { pattern: /\brifle|\baeg\b|gbbr|\bm4\b|\bak\b/i, handle: "rifles-eletricos-gbbr" },
+  { pattern: /sniper|shotgun|escopeta/i, handle: "sniper-shotgun" },
   { pattern: /carabina|airgun|chumbinho/i, handle: "airguns-carabinas" },
 ]
 

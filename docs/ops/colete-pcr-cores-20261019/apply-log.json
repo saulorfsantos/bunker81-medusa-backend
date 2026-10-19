@@ -1,0 +1,30 @@
+{
+  "created": {
+    "values": [
+      "optval_01M5AF4HCSBP4GANB3ER07Z8YG",
+      "optval_01M5AF4HCSM7VTVS6N6VM8B8TH",
+      "optval_01M5AF4HCSQDTR96PKC6PAWZ2E"
+    ],
+    "existingInventoryItem": "iitem_01M5AF4JAWXZQSTB8TFTCE73R4",
+    "variants": [
+      "variant_01M5AF4K22Q05BVJ06B5QZG6HR",
+      "variant_01M5AF4K9X8JP48358JE5CBT9Q",
+      "variant_01M5AF4KKMTWPMDK3RDN1JR25Y"
+    ]
+  },
+  "renamed": {
+    "value": {
+      "option_id": "opt_01M3Z407G0S3STN0JST5KV20X9",
+      "value_id": "optval_01M3Z407G23VEY6TTT7TE5YXP8",
+      "from": "Default option value"
+    },
+    "option": {
+      "option_id": "opt_01M3Z407G0S3STN0JST5KV20X9",
+      "from": "Default option"
+    },
+    "variant": {
+      "variant_id": "variant_01M3Z407HT178T24J0F6EEMGX8",
+      "from": "Default variant"
+    }
+  }
+}

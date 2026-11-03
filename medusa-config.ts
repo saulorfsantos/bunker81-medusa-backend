@@ -103,6 +103,9 @@ module.exports = defineConfig({
       resolve: "./src/modules/mercado-pago-attempt",
     },
     {
+      resolve: "./src/modules/orcamento",
+    },
+    {
       resolve: "@medusajs/medusa/file",
       options: {
         providers: [

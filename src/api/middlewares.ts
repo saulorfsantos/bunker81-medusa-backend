@@ -5,6 +5,7 @@ import type {
 } from "@medusajs/framework/http"
 import { authenticate, defineMiddlewares } from "@medusajs/framework/http"
 import { ensureOrderOwner } from "./middlewares/ensure-order-owner"
+import { orcamentoMiddlewares } from "./admin/orcamentos/middlewares"
 
 const toRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object"
@@ -62,6 +63,7 @@ export const normalizeMercadoPagoWebhookQuery = (
 
 export default defineMiddlewares({
   routes: [
+    ...orcamentoMiddlewares,
     {
       matcher: "/store/orders/:id",
       methods: ["GET"],

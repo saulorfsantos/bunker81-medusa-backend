@@ -23,9 +23,31 @@ export type OrderEmailData = {
   email: string
   total: number
   items: { title: string; quantity: number; total: number }[]
+  /** Fulfillment id: one email per shipment step even when an order ships in parts. */
+  ref?: string
+  tracking_number?: string
+  tracking_url?: string
 }
 
-const ORDER_TEMPLATES = new Set(["order-placed-customer", "order-placed-admin"])
+const ORDER_TEXTS: Record<string, (order: OrderEmailData, numero: string) => { subject: string; paragrafos: string[] }> = {
+  "order-placed-customer": (o, n) => ({
+    subject: `Pedido ${n} recebido — Bunker 81`,
+    paragrafos: [`Olá, ${o.customer_name}! Recebemos seu pedido ${n}. Obrigado por comprar na Bunker 81.`, "Avisaremos por e-mail quando ele for enviado."],
+  }),
+  "order-placed-admin": (o, n) => ({
+    subject: `Nova venda ${n} — ${brl(o.total)}`,
+    paragrafos: [`Nova venda na loja online: pedido ${n} de ${o.customer_name} (${o.email}).`],
+  }),
+  "order-fulfilled-customer": (o, n) => ({
+    subject: `Pedido ${n} separado — Bunker 81`,
+    paragrafos: [`Olá, ${o.customer_name}! Seu pedido ${n} foi separado e está sendo preparado para envio.`, "Mandaremos o código de rastreio assim que ele for postado."],
+  }),
+  "order-shipped-customer": (o, n) => ({
+    subject: `Pedido ${n} enviado — Bunker 81`,
+    paragrafos: [`Olá, ${o.customer_name}! Seu pedido ${n} foi postado.`, ...(o.tracking_number ? [`Código de rastreio: ${o.tracking_number}`] : [])],
+  }),
+}
+const ORDER_TEMPLATES = new Set(Object.keys(ORDER_TEXTS))
 
 const brl = (value: unknown) =>
   (Number(value) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -73,25 +95,21 @@ export default class ResendNotificationProviderService extends AbstractNotificat
   private async sendOrder(notification: ProviderSendNotificationDTO): Promise<ProviderSendNotificationResultsDTO> {
     const order = notification.data as OrderEmailData | undefined
     if (!order?.id || !Array.isArray(order.items)) throw new Error("Missing order data")
-    const forStaff = notification.template === "order-placed-admin"
     const numero = `#${order.display_id}`
+    const { subject, paragrafos } = ORDER_TEXTS[notification.template](order, numero)
     const linhas = order.items.map((item) => [item.quantity, item.title, brl(item.total)] as const)
     const tabela = linhas.map(([qtd, titulo, valor]) =>
       `<tr><td style="padding:4px 8px">${qtd}×</td><td style="padding:4px 8px">${escapeHtml(String(titulo))}</td><td style="padding:4px 8px;text-align:right">${valor}</td></tr>`).join("")
-    const intro = forStaff
-      ? `<p>Nova venda na loja online: pedido <strong>${numero}</strong> de ${escapeHtml(order.customer_name)} (${escapeHtml(order.email)}).</p>`
-      : `<p>Olá, ${escapeHtml(order.customer_name)}! Recebemos seu pedido <strong>${numero}</strong>. Obrigado por comprar na Bunker 81.</p><p>Avisaremos por e-mail quando ele for enviado.</p>`
-    const textoIntro = forStaff
-      ? `Nova venda na loja online: pedido ${numero} de ${order.customer_name} (${order.email}).`
-      : `Olá, ${order.customer_name}! Recebemos seu pedido ${numero}. Obrigado por comprar na Bunker 81.\nAvisaremos por e-mail quando ele for enviado.`
-    const rodape = forStaff ? "" : "<p>Dúvidas? Responda a este e-mail.</p>"
-    return this.deliver("order", `${notification.template}/${order.id}`, {
+    const urlRastreio = order.tracking_url && /^https:\/\//.test(order.tracking_url) ? order.tracking_url : ""
+    const rastreio = urlRastreio
+      ? `<p><a href="${escapeHtml(urlRastreio)}" style="background:#222;color:#fff;padding:12px 20px;text-decoration:none;display:inline-block">Acompanhar entrega</a></p>`
+      : ""
+    const rodape = notification.template === "order-placed-admin" ? "" : "<p>Dúvidas? Responda a este e-mail.</p>"
+    return this.deliver("order", `${notification.template}/${order.ref ?? order.id}`, {
       to: [notification.to],
-      subject: forStaff
-        ? `Nova venda ${numero} — ${brl(order.total)}`
-        : `Pedido ${numero} recebido — Bunker 81`,
-      html: `<html lang="pt-BR"><body style="font-family:Arial,sans-serif;color:#222;line-height:1.6"><h1>Bunker 81</h1>${intro}<table style="border-collapse:collapse">${tabela}<tr><td></td><td style="padding:4px 8px"><strong>Total</strong></td><td style="padding:4px 8px;text-align:right"><strong>${brl(order.total)}</strong></td></tr></table>${rodape}</body></html>`,
-      text: `Bunker 81\n\n${textoIntro}\n\n${linhas.map(([qtd, titulo, valor]) => `${qtd}x ${titulo} — ${valor}`).join("\n")}\nTotal: ${brl(order.total)}`,
+      subject,
+      html: `<html lang="pt-BR"><body style="font-family:Arial,sans-serif;color:#222;line-height:1.6"><h1>Bunker 81</h1>${paragrafos.map((p) => `<p>${escapeHtml(p)}</p>`).join("")}${rastreio}<table style="border-collapse:collapse">${tabela}<tr><td></td><td style="padding:4px 8px"><strong>Total</strong></td><td style="padding:4px 8px;text-align:right"><strong>${brl(order.total)}</strong></td></tr></table>${rodape}</body></html>`,
+      text: `Bunker 81\n\n${paragrafos.join("\n")}${urlRastreio ? `\nAcompanhe: ${urlRastreio}` : ""}\n\n${linhas.map(([qtd, titulo, valor]) => `${qtd}x ${titulo} — ${valor}`).join("\n")}\nTotal: ${brl(order.total)}`,
     })
   }
 

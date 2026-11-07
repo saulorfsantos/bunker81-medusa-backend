@@ -139,12 +139,13 @@ describe("Melhor Envio sandbox quote", () => {
     expect(Object.getOwnPropertyNames(MelhorEnvioClient.prototype)).toEqual(["constructor", "quote"])
   })
 
-  it("rejects fulfillment, cancellation and returns without contacting the quote client", async () => {
+  it("records fulfillment and cancellation, rejects returns, without contacting the quote client", async () => {
     const spy = jest.spyOn(MelhorEnvioClient.prototype, "quote")
     try {
       const provider = new MelhorEnvioFulfillmentService({}, readMelhorEnvioConfig({ ...env, MELHOR_ENVIO_ENV: "production" })!)
-      await expect(provider.createFulfillment({}, [], undefined, {})).rejects.toThrow(/outside this release/)
-      await expect(provider.cancelFulfillment()).rejects.toThrow(/outside this release/)
+      // Separar o pedido só registra; a etiqueta é comprada à mão no Melhor Envio.
+      await expect(provider.createFulfillment({}, [], undefined, {})).resolves.toEqual({ data: {}, labels: [] })
+      await expect(provider.cancelFulfillment()).resolves.toEqual({})
       await expect(provider.createReturnFulfillment()).rejects.toThrow(/outside this release/)
       expect(spy).not.toHaveBeenCalled()
     } finally {

@@ -126,5 +126,23 @@ describe("Resend order emails", () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.subject).toMatch(/^Nova venda #42 — R\$\s?150,00$/)
   })
-})
 
+  test("shipped email carries the tracking code and an escaped tracking link, one key per fulfillment", async () => {
+    await service.send({ to: "ana@example.com", channel: "email", template: "order-shipped-customer",
+      data: { ...data, ref: "ful_1", tracking_number: "AA123BR", tracking_url: "https://www.melhorrastreio.com.br/rastreio/AA123BR?x=1&y=2" } } as ProviderSendNotificationDTO)
+    const [, request] = fetchMock.mock.calls[0]
+    const body = JSON.parse(request.body)
+    expect(body.subject).toBe("Pedido #42 enviado — Bunker 81")
+    expect(body.html).toContain("Código de rastreio: AA123BR")
+    expect(body.html).toContain("rastreio/AA123BR?x=1&amp;y=2")
+    expect(request.headers["Idempotency-Key"]).toBe("order-shipped-customer/ful_1")
+  })
+
+  test("never links a non-https tracking URL", async () => {
+    await service.send({ to: "ana@example.com", channel: "email", template: "order-fulfilled-customer",
+      data: { ...data, tracking_url: "javascript:alert(1)" } } as ProviderSendNotificationDTO)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.subject).toBe("Pedido #42 separado — Bunker 81")
+    expect(body.html).not.toContain("javascript:")
+  })
+})

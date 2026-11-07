@@ -28,7 +28,7 @@ export async function GET(req: AuthenticatedMedusaRequest, res: MedusaResponse) 
       : { cliente_nome: { $ilike: `%${q}%` } }
 
   const service: OrcamentoModuleService = req.scope.resolve(ORCAMENTO_MODULE)
-  const [orcamentos, count] = await service.listAndCountOrcamentoes(filtros, {
+  const [orcamentos, count] = await service.listAndCountOrcamentos(filtros, {
     take: limit,
     skip: offset,
     order: { created_at: "DESC" },

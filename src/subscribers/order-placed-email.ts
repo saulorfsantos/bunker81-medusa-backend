@@ -6,13 +6,8 @@ import type { OrderEmailData } from "../modules/resend/service"
 // The PDV fills checkout with this placeholder when the buyer gives no email.
 const PDV_PLACEHOLDER = /^pdv-[^@]*@bunker81\.com\.br$/i
 
-export default async function orderPlacedEmail({ event: { data }, container }: SubscriberArgs<{ id: string }>) {
-  const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
-  if (!readResendConfig(process.env)) {
-    logger.warn(`Order email skipped for ${data.id}: Resend is not configured`)
-    return
-  }
-
+/** Pedido com os dados que os e-mails mostram; compartilhado pelos avisos de separado e enviado. */
+export async function lerPedido(container: SubscriberArgs<unknown>["container"], orderId: string) {
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
   const { data: [order] } = await query.graph({
     entity: "order",
@@ -21,9 +16,9 @@ export default async function orderPlacedEmail({ event: { data }, container }: S
       "items.title", "items.quantity", "items.unit_price", "items.total",
       "shipping_address.first_name", "shipping_address.last_name",
     ],
-    filters: { id: data.id },
+    filters: { id: orderId },
   })
-  if (!order) throw new Error(`Order ${data.id} not found for email`)
+  if (!order) throw new Error(`Order ${orderId} not found for email`)
 
   const pdv = (order.metadata as Record<string, unknown> | null)?.origem === "PDV"
   const nome = [order.shipping_address?.first_name, order.shipping_address?.last_name]
@@ -41,10 +36,25 @@ export default async function orderPlacedEmail({ event: { data }, container }: S
     })),
   }
 
-  const envios: { to: string; template: string }[] = []
-  if (order.email && !PDV_PLACEHOLDER.test(order.email)) {
-    envios.push({ to: order.email, template: "order-placed-customer" })
+  return { order, payload, pdv }
+}
+
+export function emailDoCliente(email: string | null | undefined) {
+  return email && !PDV_PLACEHOLDER.test(email) ? email : null
+}
+
+export default async function orderPlacedEmail({ event: { data }, container }: SubscriberArgs<{ id: string }>) {
+  const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
+  if (!readResendConfig(process.env)) {
+    logger.warn(`Order email skipped for ${data.id}: Resend is not configured`)
+    return
   }
+
+  const { order, payload, pdv } = await lerPedido(container, data.id)
+
+  const envios: { to: string; template: string }[] = []
+  const cliente = emailDoCliente(order.email)
+  if (cliente) envios.push({ to: cliente, template: "order-placed-customer" })
   // Counter sales are made by the staff themselves; only online orders alert the shop.
   const equipe = process.env.ORDER_NOTIFY_EMAIL?.trim()
   if (equipe && !pdv) envios.push({ to: equipe, template: "order-placed-admin" })

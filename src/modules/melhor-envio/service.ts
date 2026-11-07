@@ -109,11 +109,13 @@ export class MelhorEnvioFulfillmentService extends AbstractFulfillmentProviderSe
     _order: Partial<FulfillmentOrderDTO> | undefined,
     _fulfillment: Partial<Omit<FulfillmentDTO, "provider_id" | "data" | "items">>
   ): Promise<CreateFulfillmentResult> {
-    throw new Error("Melhor Envio label purchase is outside this release")
+    // shortcut: a etiqueta é comprada à mão no site do Melhor Envio e o rastreio é digitado no PDV;
+    // automatizar a compra da etiqueta aqui se o volume de pedidos crescer.
+    return { data: {}, labels: [] }
   }
 
   async cancelFulfillment(): Promise<Record<string, never>> {
-    throw new Error("Melhor Envio logistics are outside this release")
+    return {}
   }
 
   async createReturnFulfillment(): Promise<CreateFulfillmentResult> {

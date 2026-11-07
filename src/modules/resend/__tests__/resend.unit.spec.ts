@@ -95,3 +95,36 @@ describe("Resend reset delivery", () => {
     await expect(service.send(notification)).rejects.toThrow("no message ID")
   })
 })
+
+describe("Resend order emails", () => {
+  const originalFetch = global.fetch
+  const fetchMock = jest.fn()
+  const service = new ResendNotificationProviderService({}, options)
+  const data = { id: "order_1", display_id: 42, customer_name: "Ana <script>", email: "ana@example.com", total: 150,
+    items: [{ title: "Pistola <BB>", quantity: 2, total: 150 }] }
+
+  beforeEach(() => {
+    fetchMock.mockReset().mockResolvedValue({ ok: true, json: async () => ({ id: "email-id" }) })
+    global.fetch = fetchMock
+  })
+  afterAll(() => { global.fetch = originalFetch })
+
+  test("confirms the order to the buyer with escaped content and one key per order", async () => {
+    await service.send({ to: "ana@example.com", channel: "email", template: "order-placed-customer", data } as ProviderSendNotificationDTO)
+    const [, request] = fetchMock.mock.calls[0]
+    const body = JSON.parse(request.body)
+    expect(body.subject).toBe("Pedido #42 recebido — Bunker 81")
+    expect(body.from).toBe(env.RESEND_FROM)
+    expect(body.html).toContain("Pistola &lt;BB&gt;")
+    expect(body.html).not.toContain("<script>")
+    expect(body.html).toContain("R$")
+    expect(request.headers["Idempotency-Key"]).toBe("order-placed-customer/order_1")
+  })
+
+  test("alerts the shop with the total in the subject", async () => {
+    await service.send({ to: "dono@example.com", channel: "email", template: "order-placed-admin", data } as ProviderSendNotificationDTO)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.subject).toMatch(/^Nova venda #42 — R\$\s?150,00$/)
+  })
+})
+

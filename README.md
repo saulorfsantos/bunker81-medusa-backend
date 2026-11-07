@@ -65,6 +65,8 @@ RESEND_API_KEY=
 RESEND_FROM="Bunker 81 <loja@bunker81.com.br>"
 # Optional: defaults to the mailbox in RESEND_FROM.
 RESEND_REPLY_TO=loja@bunker81.com.br
+# Optional: alerted on every online-store order; buyers always get a confirmation.
+ORDER_NOTIFY_EMAIL=
 ```
 
 `STOREFRONT_URL` must be the public HTTPS origin of the storefront, without a path/query/fragment.
